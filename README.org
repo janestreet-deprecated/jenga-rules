@@ -1,0 +1,8 @@
+* Jane Street rules for Jenga
+
+This repository contains the Jenga rules used at Jane Street. They are
+adapted to work in the opam world.
+
+Note that this is still a work in progress. Building libraries and
+executables should work fine but the many other features such as
+support for inline tests or benchmarks doesn't work yet.
