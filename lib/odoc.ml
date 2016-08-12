@@ -16,6 +16,9 @@ let alias ~dir = Alias.create ~dir "doc"
 let odoc_output_dir = root_relative ".odoc"
 let html_output_dir = root_relative ".odoc_html"
 
+let dash_Is ~dir dirs =
+  List.concat_map dirs ~f:(fun path -> ["-I"; Path.reach_from ~dir path])
+
 let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
   Dep.both
     (Dep.glob_listing (Glob.create ~dir:remote_dir "*.cmt"))
@@ -42,6 +45,7 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
                Action.process ~dir odoc_path ["compile-deps"; Path.reach_from ~dir path])
             *>>= fun deps_stdout ->
             let deps =
+              Dep.path path ::
               List.filter_map (String.split_lines deps_stdout) ~f:(fun line ->
                 let this_module, digest_hex = String.lsplit2_exn line ~on:' ' in
                 if current_module = this_module
@@ -57,17 +61,11 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
               (List.concat
                  [ deps
                  ; List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir))
-                 ; [Dep.path path]
                  ])
             *>>| fun () ->
-            let dash_Is =
-              List.concat_map (dir :: search_paths) ~f:(fun path ->
-                ["-I"; Path.reach_from ~dir path]
-              )
-            in
             Action.process ~ignore_stderr:true ~dir odoc_path (
               [ "compile"; "--pkg"; LN.to_string libname; "-o"; "."]
-              @ dash_Is
+              @ dash_Is ~dir (dir :: search_paths)
               @ [Path.reach_from ~dir path]
             )
           )
@@ -76,6 +74,52 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
     )
   in
   Rule.alias (alias ~dir) (List.map targets ~f:Dep.path) :: rules
+
+let link_targets_file_of_input ~dir input =
+  let basename = Filename.chop_extension (Path.basename input) in
+  Path.relative ~dir (basename ^ ".odoc-targets")
+
+let link_deps ~dir path =
+  Dep.path path
+  *>>| fun () ->
+  Action.process ~dir odoc_path ["link-deps"; Path.reach_from ~dir path]
+
+let link_rules_deps ~dir ~inputs_as_module_map ~search_paths input =
+  Dep.action_stdout (link_deps ~dir input)
+  *>>= fun out ->
+  let unit_deps = String.split_lines out in
+  let deps =
+    Dep.path input ::
+    List.filter_map unit_deps ~f:(fun this_module ->
+      match Map.find inputs_as_module_map this_module with
+      | None -> None
+      | Some path -> Some (Dep.path path))
+  in
+  let common_deps =
+    List.concat
+      [ deps
+      ; List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir))
+      ]
+  in
+  Dep.all_unit common_deps
+
+let odoc_link_targets_rule ~dir ~search_paths ~inputs_as_module_map ~odoc_dir input =
+  let target = link_targets_file_of_input ~dir input in
+  Rule.create ~targets:[target] (
+    Dep.action_stdout (
+      (* might be too many dependencies, but at least we know we're not missing any
+         since actually producing the html files requires no more than this *)
+      link_rules_deps ~dir ~inputs_as_module_map ~search_paths input
+      *>>| fun () ->
+      Action.process ~ignore_stderr:true ~dir odoc_path (
+        ["html-targets"]
+        @ dash_Is ~dir (odoc_dir :: search_paths)
+        @ ["-o"; "."; Path.reach_from ~dir input]
+      )
+    )
+    *>>| fun out ->
+    Action.save out ~target
+  )
 
 let odoc_link_rules ~dir ~search_paths ~libname =
   let odoc_dir = Path.relative ~dir:odoc_output_dir (LN.to_string libname) in
@@ -91,47 +135,23 @@ let odoc_link_rules ~dir ~search_paths ~libname =
       let archive = Filename.chop_extension (Path.basename input) ^ ".tgz" in
       let rule =
         Rule.create ~targets:[Path.relative ~dir archive] (
-          Dep.action_stdout
-            (Dep.path input *>>| fun () ->
-             Action.process ~dir odoc_path ["link-deps"; Path.reach_from ~dir input])
-          *>>= fun out ->
-          let unit_deps = String.split_lines out in
-          let deps =
-            Dep.path input ::
-            List.filter_map unit_deps ~f:(fun this_module ->
-              match Map.find inputs_as_module_map this_module with
-              | None -> None
-              | Some path -> Some (Dep.path path))
-          in
-          let dash_Is =
-            List.concat_map (odoc_dir :: search_paths) ~f:(fun path ->
-              ["-I"; Path.reach_from ~dir path]
-            )
-          in
-          let common_deps =
-            List.concat
-              [ deps
-              ; List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir))
-              ]
-          in
+          let targets_file = link_targets_file_of_input ~dir input in
           Dep.both
-            (Dep.all_unit common_deps)
-            (Dep.action_stdout
-               (Dep.all_unit common_deps
-                *>>| fun () ->
-                Action.process ~ignore_stderr:true ~dir odoc_path (
-                  ["html-targets"] @ dash_Is @ ["-o"; "."; Path.reach_from ~dir input])))
-          *>>| fun ((), out) ->
-          let targets = List.map ~f:(Path.relative ~dir) (String.split_lines out) in
+            (link_rules_deps ~dir ~inputs_as_module_map ~search_paths input)
+            (Dep.path targets_file)
+          *>>| fun ((), ()) ->
           bashf ~ignore_stderr:true ~dir
-            !"%{quote} html %s -o . %{quote} &> /dev/null && tar -czf %{quote} %s"
-            odoc_path (concat_quoted dash_Is) (reach_from ~dir input)
+            !"%{quote} html %{concat_quoted} -o . %{quote} && tar -czf %{quote} -T %{quote}"
+            odoc_path
+            (dash_Is ~dir (odoc_dir :: search_paths))
+            (reach_from ~dir input)
             archive
-            (concat_quoted @@
-             List.map targets ~f:(fun p -> reach_from ~dir p))
+            (reach_from ~dir targets_file)
         )
       in
-      (Path.relative ~dir archive :: archives, rule :: rules)
+      (Path.relative ~dir archive :: archives,
+       odoc_link_targets_rule ~dir ~search_paths ~inputs_as_module_map ~odoc_dir
+         input :: rule :: rules)
     )
   in
   Rule.alias (alias ~dir) (List.map targets ~f:Dep.path) :: rules

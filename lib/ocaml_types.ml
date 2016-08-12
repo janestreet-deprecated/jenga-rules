@@ -120,6 +120,7 @@ module From_compiler_distribution : sig
   val transitive_deps : t -> t list
   val supported_in_javascript : t -> bool
   val ocamlfind_package : t -> Findlib_package_name.t
+  val cmis__partially_implemented : t -> stdlib_dir:Path.t -> Path.t list
 end = struct
   type t =
     | Bigarray
@@ -192,6 +193,16 @@ end = struct
     in
     Findlib_package_name.of_string s
   ;;
+
+  let cmis__partially_implemented t ~stdlib_dir =
+    let dir_relative_to_stdlib_dir =
+      match artifact_dir t with
+      | None -> ""
+      | Some p -> (String.chop_prefix_exn p ~prefix:"+") ^ "/"
+    in
+    match t with
+    | Str -> [Path.relative ~dir:stdlib_dir (dir_relative_to_stdlib_dir ^ "str.cmi")]
+    | _ -> []
 end
 
 module Lib_dep : sig

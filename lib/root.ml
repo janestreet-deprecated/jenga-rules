@@ -297,6 +297,7 @@ let default_cxxflags = default_cflags
 
 let ocaml_bin   = Compiler_selection.compiler_bin_dir
 let ocaml_where = Compiler_selection.compiler_stdlib_dir
+let ocaml_where_path = Path.absolute ocaml_where
 
 let ocamldep_path   = ocaml_bin ^/ "ocamldep.opt"
 let ocamlc_path     = ocaml_bin ^/ "ocamlc.opt"
@@ -1238,9 +1239,11 @@ end = struct
   let submodule_cmi_paths (lib : Lib_dep.t) =
     match lib with
     | In_the_tree lib -> In_the_tree.liblink_submodule_cmi_paths ~lib
-    | From_compiler_distribution _
+    | From_compiler_distribution name ->
+      return (From_compiler_distribution.cmis__partially_implemented
+                name ~stdlib_dir:ocaml_where_path)
     | Findlib_package _ ->
-      (* We might want to implement that, to embed compiler libs or findlib packages? *)
+      (* We might want to implement that, to embed findlib packages? *)
       return []
   ;;
 
@@ -3995,18 +3998,22 @@ let time_limit = relative ~dir:Config.script_dir "time_limit"
 let ocaml_plugin_dir = root_relative "lib/ocaml_plugin"
 let embedder = relative ~dir:ocaml_plugin_dir "bin/ocaml_embed_compiler.exe"
 
-let builtin_cmis =
-  List.map [ "pervasives.cmi"
-           ; "camlinternalLazy.cmi"
-           ; "camlinternalMod.cmi"
-           ; "camlinternalOO.cmi"
-           ; "camlinternalFormatBasics.cmi" (* added for 4.02 *)
-           ; "lexing.cmi" (* pa_here (and by extension pa_fail) needs this *)
-           ; "printf.cmi" (* added for 4.02 *)
-           ; "digest.cmi" (* added for 4.02 *)
-           ; "str.cmi" (* added for app/rules-checker *)
-           ]
-    ~f:(fun cmi -> ocaml_where ^/ cmi)
+let stdlib_cmis () =
+  (* We don't force the stdlib to be linked, so potentially plugins could build
+     but not dynlink. We don't expect people to call the stdlib though, but rather
+     they should use core, so it seems fine. *)
+  Dep.action_stdout
+    (return (Action.process ~dir:Path.the_root
+               ocamlobjinfo_path [Filename.concat ocaml_where "stdlib.cmxa"]))
+  *>>| fun output ->
+  let lines = String.split_lines output in
+  List.filter_map lines ~f:(fun line ->
+    match String.chop_prefix line ~prefix:"Name: " with
+    | None -> None
+    | Some module_ ->
+      Some (Filename.concat ocaml_where (String.uncapitalize module_ ^ ".cmi"))
+  )
+;;
 
 let embed_rules dc ~dir conf =
   let wrapped = wrapped_bindirs in
@@ -4051,26 +4058,23 @@ let embed_rules dc ~dir conf =
     let gen_plugin_c =
       Rule.create
         ~targets:[relative ~dir (plugin_name ^ ".c")] (
-        Dep.List.concat_map libraries ~f:(fun lib ->
-          LL.interface_deps dc.libmap lib *>>| fun deps -> lib :: deps
-        ) *>>= fun libraries ->
-        let libraries = Lib_dep.remove_dups_and_sort libraries in
-        let local_cmis =
-          List.map cmis ~f:(fun name ->
-            let prefixed_name = PN.of_barename ~wrapped ~libname (BN.of_string name) in
-            PN.suffixed ~dir prefixed_name ".cmi"
-          )
-        in
-        Dep.List.concat_map libraries ~f:LL.submodule_cmi_paths
-        *>>= fun library_cmis ->
-        let cmis = local_cmis @ library_cmis in
-        let dep_paths = cmis @ preprocessing_dep_paths @ [
-          (*ocamlopt_path*)
-          (*builtin_cmis*)
-          time_limit;
-          embedder;
-        ]
-        in
+        Dep.both
+          (stdlib_cmis ())
+          (Dep.List.concat_map libraries ~f:(fun lib ->
+             LL.interface_deps dc.libmap lib *>>| fun deps -> lib :: deps
+           ) *>>= fun libraries ->
+           let libraries = Lib_dep.remove_dups_and_sort libraries in
+           let local_cmis =
+             List.map cmis ~f:(fun name ->
+               let prefixed_name = PN.of_barename ~wrapped ~libname (BN.of_string name) in
+               PN.suffixed ~dir prefixed_name ".cmi"
+             )
+           in
+           Dep.List.concat_map libraries ~f:LL.submodule_cmi_paths
+           *>>| fun library_cmis ->
+           local_cmis @ library_cmis)
+        *>>= fun (stdlib_cmis, cmis) ->
+        let dep_paths = cmis @ preprocessing_dep_paths @ [ time_limit; embedder ] in
         Dep.all_unit (List.map ~f:Dep.path dep_paths) *>>| fun () ->
         (* Be careful here: there is a limit of MAX_ARG_STRLEN (130kB)  on any argument
            (note that this is distinct from ARG_MAX, which is bigger),
@@ -4088,7 +4092,7 @@ let embed_rules dc ~dir conf =
               ; "-ocamldep"
               ; ocamldep_path
               ]
-            ; builtin_cmis
+            ; stdlib_cmis
             ; List.map ~f:(reach_from ~dir) cmis
             ; [ "-o"; plugin_name ^ ".c" ]
             ])
@@ -4402,7 +4406,12 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
       [];
   ]
 
-let bench_runner_dir = root_relative "lib/core_bench/inline_benchmarks_runner_lib_internal/bin"
+let bench_runner_dir =
+  (* inline_benchmarks_internal is not compatible with 32bit architectures. *)
+  if Compiler_selection.m32
+  then root_relative "lib/core_bench/inline_benchmarks_runner_lib_public/bin"
+  else root_relative "lib/core_bench/inline_benchmarks_runner_lib_internal/bin"
+
 let inline_bench_rules dc ~skip_from_default ~lib_in_the_tree =
   let { Lib_in_the_tree. source_path = dir; name = libname; _ } = lib_in_the_tree in
   let exe = "inline_benchmarks_runner" in
@@ -5345,6 +5354,7 @@ let recursive_alias_list = [
   Alias.unused_libs;
   Alias.save_benchmarks;
   Alias.create "empty";
+  Odoc.alias;
 ] @ Lib_clients.aliases
 
 let setup_recursive_aliases ~dir =

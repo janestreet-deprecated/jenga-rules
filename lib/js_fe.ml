@@ -325,9 +325,14 @@ module Make(Hg : sig
       *>>= function
       | (_, (_, (Error e))) -> return (Some (Error.to_string_hum e))
       | (tracked_files, (libs_by_dir, Ok files_in_projections)) ->
+        let dir_of_jenga_sources = Path.root_relative "jenga" in
         let dirs =
           List.dedup ~compare:Path.compare
-            (List.map ~f:Path.dirname files_in_projections)
+            (List.filter_map files_in_projections ~f:(fun path ->
+               let dir = Path.dirname path in
+               if Path.equal dir dir_of_jenga_sources
+               then None
+               else Some dir))
         and files_in_projections = Path.Set.of_list files_in_projections
         in
         let libs = List.concat_map dirs ~f:libs_by_dir in
