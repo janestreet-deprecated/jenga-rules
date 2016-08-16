@@ -4184,7 +4184,7 @@ let jane_script_rules dc
 ----------------------------------------------------------------------*)
 
 let inline_tests_script_rule ~dir ~libname ~javascript ~script:target ~flags =
-  let nodejs = "/j/office/app/nodejs/prod/v0.12.4/bin/node" in
+  let nodejs = "/j/office/app/nodejs/prod/v4.4.7/bin/node" in
   let run =
     if drop_test
     then "echo >&2 'Tests have been disabled'; exit 1"
@@ -4236,7 +4236,7 @@ let run_inline_action ~dir ~user_deps ~exe_deps ~flags ~runtime_deps filename =
    *>>| fun () ->
    let args =
      (* Longer timeout for the javascript tests, which are sometimes much slower. *)
-     [ (if Compiler_selection.m32 then "120" else "60")
+     [ (if Compiler_selection.m32 then "90" else "60")
      ; "./" ^ filename
      ]
      @ flags
