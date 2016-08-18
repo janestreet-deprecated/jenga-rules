@@ -116,7 +116,8 @@ module From_compiler_distribution : sig
 
   val to_string : t -> string
   val libdep_name : t -> Libdep_name.t
-  val artifact_dir : t -> string option
+  val artifact_dir_relative_to_stdlib_dir : t -> string option
+  val search_path_dir : t -> string option
   val transitive_deps : t -> t list
   val supported_in_javascript : t -> bool
   val ocamlfind_package : t -> Findlib_package_name.t
@@ -154,11 +155,15 @@ end = struct
 
   let libdep_name t = Libdep_name.of_string (to_string t)
 
-  let artifact_dir = function
+  let artifact_dir_relative_to_stdlib_dir = function
     | Bigarray | Dynlink | Graphics | Nums | Str | Unix -> None
-    | Threads -> Some "+threads"
+    | Threads -> Some "threads"
     | Ocamlcommon | Ocamlopttoplevel | Ocamltoplevel | Ocamlbytecomp | Ocamloptcomp ->
-      Some "+compiler-libs"
+      Some "compiler-libs"
+  let search_path_dir t =
+    match artifact_dir_relative_to_stdlib_dir t with
+    | None -> None
+    | Some s -> Some ("+" ^ s)
 
   let transitive_deps = function
     | Bigarray | Dynlink | Graphics | Nums | Str | Unix | Threads
@@ -196,9 +201,9 @@ end = struct
 
   let cmis__partially_implemented t ~stdlib_dir =
     let dir_relative_to_stdlib_dir =
-      match artifact_dir t with
+      match artifact_dir_relative_to_stdlib_dir t with
       | None -> ""
-      | Some p -> (String.chop_prefix_exn p ~prefix:"+") ^ "/"
+      | Some p -> p ^ "/"
     in
     match t with
     | Str -> [Path.relative ~dir:stdlib_dir (dir_relative_to_stdlib_dir ^ "str.cmi")]

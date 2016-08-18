@@ -50,7 +50,8 @@ module Findlib_package_name = Ocaml_types.Findlib_package_name
 
 module Js_of_ocaml_conf = struct
   type t =
-    { flags : string sexp_list }
+    { flags            : string sexp_list;
+      javascript_files : string sexp_list }
   [@@deriving of_sexp]
 end
 
@@ -423,6 +424,13 @@ module Public_repo = struct
   [@@deriving of_sexp]
 end
 
+module Html_conf = struct
+  type t =
+    { orgs : string list;
+      css : string sexp_option; }
+  [@@deriving of_sexp]
+end
+
 module Jbuild = struct
   (* [Jbuild.t] describes the various kinds of build configuration descriptions.
      A jbuild file contains the sexp-representation of a list of [Jbuild.t]
@@ -453,6 +461,7 @@ module Jbuild = struct
   | `toplevel_expect_tests of Toplevel_expect_tests.t
   | `requires_camlp4
   | `public_repo of Public_repo.t
+  | `html of Html_conf.t
   ]
   [@@deriving of_sexp]
 end

@@ -214,6 +214,12 @@ let allow_hardware_specialization =
 
 let o3 = Var.peek_register_bool "WITH_O3" ~default:true
 
+let for_javascript_development =
+  (* Select the right options / compilation mode to provide
+     a faster development loop and
+     a better debugging experience. *)
+  Var.peek_register_bool "FOR_JS_DEVEL" ~default:false
+
 let unbox_closures = Var.peek_register_bool "WITH_UNBOX_CLOSURES" ~default:true
 
 let alias_for_inline_runners ~skip_from_default ~dir =
@@ -781,6 +787,7 @@ end = struct
     | `toplevel_expect_tests _ -> []
     | `requires_camlp4 -> []
     | `public_repo _ -> []
+    | `html _ -> []
 
   let libnames ~dir =
     load ~dir *>>| List.concat_map ~f:the_real_libnames_for_libmap
@@ -1034,6 +1041,7 @@ end = struct
       cmi_maybe_cmx
       @ [".cmxs"; ".cmo";".cma";".cmxa";".a";".libdeps";".interface.deps";
          ".stub.names"; ".cmti"; ".cmt";
+         Js_of_ocaml.cma_suf; Js_of_ocaml.jsdeps_suf
         ]
 
     let submodule_names ~(lib : Lib_in_the_tree.t) =
@@ -1205,7 +1213,7 @@ end = struct
       ; LN.to_string lib.name ^ cmxa ]
     | From_compiler_distribution compiler_lib -> begin
         let archive = From_compiler_distribution.to_string compiler_lib ^ cmxa in
-        match From_compiler_distribution.artifact_dir compiler_lib with
+        match From_compiler_distribution.search_path_dir compiler_lib with
         | None -> [ archive ]
         | Some dir -> [ "-I"; dir; archive ]
       end
@@ -1218,7 +1226,7 @@ end = struct
       | Lib_dep.In_the_tree lib ->
         [ "-I"; reach_from ~dir (In_the_tree.liblink_dir ~libname:lib.name) ]
       | From_compiler_distribution compiler_lib -> begin
-          match From_compiler_distribution.artifact_dir compiler_lib with
+          match From_compiler_distribution.search_path_dir compiler_lib with
           | None -> []
           | Some dir -> [ "-I"; dir ]
         end
@@ -2561,7 +2569,10 @@ let native_compile_ml mc ~name =
       @ pp_deps
       @ libdeps
     in
-    let deps = if exists_mli then deps @ [Dep.path cmi] else deps in
+    let deps =
+      if exists_mli
+      then deps @ [ Dep.path cmi ]
+      else deps in
     let deps,open_renaming_args = open_renaming deps mc in
     Findlib.Query.result_and mc.findlib_include_flags (Dep.all_unit deps)
     *>>| fun (external_include_flags, ()) ->
@@ -2599,7 +2610,9 @@ let byte_compile_ml mc ~name =
      which are written by both native and byte compilers when there is no .mli file.
      After byte compilation, the .cmo is [mv]ed back to the original prefixed name. *)
   let prefix_args = prefix_args ~wrapped ~libname ~name in
-  let targets = [ cmo ] in
+  let targets =
+    [ cmo ]
+  in
   Rule.create ~targets (
     get_inferred_1step_deps dc.libmap ~dir ~libname *>>= fun libs ->
     let libs = Lib_dep.remove_dups_preserve_order (pp_libs @ libs) in
@@ -2628,6 +2641,17 @@ let byte_compile_ml mc ~name =
         ["-c"; "-impl"; basename ml];
       ])
   )
+
+let js_compile_cmo mc ~js_of_ocaml ~name =
+  let {MC. dir; libname; wrapped; _ } = mc in
+  let prefixed_name = PN.of_barename ~wrapped ~libname name in
+  let cmo = PN.suffixed ~dir prefixed_name ".cmo" in
+  let js = PN.suffixed ~dir prefixed_name Js_of_ocaml.cmo_suf in
+  Js_of_ocaml.rule
+    ~build_info:None ~hg_version:None ~dir
+    ~flags:js_of_ocaml.Js_of_ocaml_conf.flags
+    ~js_files:(Dep.return [])
+    ~src:cmo ~target:js
 
 let infer_mli_auto mc ~name =
   let {MC. dc; dir; libname; wrapped; _ } = mc in
@@ -2673,8 +2697,10 @@ let mem_of_list l =
 
 let setup_ml_compile_rules
       ?(disallowed_module_dep = fun _ -> None)
+      ~js_of_ocaml
       dc ~dir ~libname ~wrapped ~for_executable ~can_setup_inline_runners
-      ~preprocessor_deps ~preprocess_spec ~names_spec ~libraries_written_by_user =
+      ~preprocessor_deps ~preprocess_spec ~names_spec ~libraries_written_by_user
+  =
   let default_pp = None in
   let names_spec_intfs, names_spec_impls, names_spec_modules =
     eval_names_spec ~dc names_spec
@@ -2740,6 +2766,11 @@ let setup_ml_compile_rules
           then disallowed_module_dep x
           else Some (sprintf !"%{BN} is not part of the library/executable spec" x)
         in
+        let javascript_rule =
+          match js_of_ocaml with
+          | None -> []
+          | Some js_of_ocaml -> [js_compile_cmo mc ~js_of_ocaml ~name]
+        in
         List.concat [
           [gen_cmideps dc name];
           (if for_executable
@@ -2747,6 +2778,7 @@ let setup_ml_compile_rules
            else []);
           (if exists_ml then List.concat [
              generate_pp mc ~kind:ML ~name;
+             javascript_rule;
              [ gen_dfile ML ~disallowed_module_dep mc ~name ~actual_modules;
                byte_compile_ml mc ~name;
                native_compile_ml mc ~name;
@@ -3404,6 +3436,26 @@ let get_libs_for_exe libmap ~link_libdeps_of ~libs_for_plugins ~force_link =
                                         ~f:Lib_dep.of_lib_in_the_tree)
 ;;
 
+
+module Js_of_ocaml_jsdeps = struct
+
+  let rule ~dir libname files =
+    let target = LN.suffixed ~dir libname Js_of_ocaml.jsdeps_suf in
+    let files = List.map files ~f:Path.to_string in
+    write_string_rule ~target (String.concat ~sep:" " files)
+
+  let all_deps_for_libs (libs : Lib_dep.t list) : Path.t list Dep.t =
+    Dep.List.concat_map libs ~f:(function
+      | From_compiler_distribution _
+      | Findlib_package _ -> Dep.return []
+      | In_the_tree lib ->
+        let path =
+          LL.path_to_ocaml_artifact ~lib_in_the_tree:lib.name ~suf:Js_of_ocaml.jsdeps_suf
+        in
+        file_words path *>>| List.map ~f:Path.root_relative
+    )
+end
+
 let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       ~more_deps
       ~link_flags
@@ -3447,6 +3499,9 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
 
   let findlib_archives =
     Findlib.archives (module Mode) ~dir ~exe libs_maybe_forced_dep
+  in
+  let findlib_archives_full_path =
+    Findlib.archives_full_path (module Mode) ~dir ~exe libs_maybe_forced_dep
   in
   let findlib_include_flags =
     Findlib.include_flags ~dir (exe ^ Mode.exe) libs_maybe_forced_dep
@@ -3529,19 +3584,25 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
 
   let js_of_ocaml_rules =
     match Mode.which, js_of_ocaml with
-    | `Byte, Some { Js_of_ocaml_conf. flags } when Compiler_selection.m32 ->
+    | `Byte, Some { Js_of_ocaml_conf.flags; javascript_files } when Compiler_selection.m32 ->
+      let target_js = suffixed ~dir exe Js_of_ocaml.exe_suf in
+      let javascript_files = List.map ~f:(Path.relative_or_absolute ~dir) javascript_files in
+      let js_files : Path.t list Dep.t =
+        libs_maybe_forced_dep *>>= fun libs_maybe_forced ->
+        Js_of_ocaml_jsdeps.all_deps_for_libs libs_maybe_forced
+        *>>| fun js_files_from_libs ->
+        js_files_from_libs @ javascript_files
+      in
       let hg_version =
         if suppress_version_util
         then None
         else Some hg_version_out
       in
       let build_info =
-        if suppress_build_info
+        if suppress_build_info || for_javascript_development
         then None
         else Some (relative ~dir (build_info_base ~base:(exe ^ Mode.exe) ^ ".sexp"))
       in
-      let bytecode_exe = suffixed ~dir exe Mode.exe in
-      let target_js = suffixed ~dir exe Js_of_ocaml.suf in
       let flags =
         if test_or_bench
         then flags
@@ -3549,7 +3610,57 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
              ; "--setenv"; "FORCE_DROP_BENCH=true" ]
              @ flags
       in
-      [Js_of_ocaml.rule ~build_info ~hg_version ~dir ~flags ~src:bytecode_exe ~target:target_js]
+      let runtime_js = suffixed ~dir exe Js_of_ocaml.runtime_suf in
+      let bc_dot_js_rule =
+        if not for_javascript_development
+        then begin
+          let bytecode_exe = suffixed ~dir exe Mode.exe in
+          Js_of_ocaml.rule ~build_info ~hg_version ~dir ~flags ~js_files ~src:bytecode_exe ~target:target_js
+        end else begin
+          Rule.create ~targets:[target_js] (
+            let findlib_archives =
+              Findlib.archives_full_path (module Mode) ~dir ~exe libs_maybe_forced_dep
+            in
+            libs_maybe_forced_dep
+            *>>= fun libs_maybe_forced ->
+            compute_objs
+            *>>= fun objs ->
+            js_files *>>= fun js_files ->
+            Findlib.Query.result findlib_archives
+            *>>= fun archives_list ->
+            Js_of_ocaml.from_external_archives
+              ~ocaml_where:ocaml_where_path
+              (List.map ~f:Path.absolute archives_list)
+            *>>= fun js_archives_list ->
+            let sub_cmos_in_correct_order =
+              List.map objs ~f:(fun (obj_dir, base) ->
+                Path.relative ~dir:obj_dir (base ^ Js_of_ocaml.cmo_suf)) in
+            let libs_cma_js =
+              Js_of_ocaml.stdlib_from_compiler_distribution ::
+              List.concat_map libs_maybe_forced ~f:(fun lib_dep ->
+                match lib_dep with
+                | In_the_tree lib ->
+                  [ LL.path_to_ocaml_artifact ~lib_in_the_tree:lib.name ~suf:Js_of_ocaml.cma_suf ]
+                | From_compiler_distribution dst ->
+                  [ Js_of_ocaml.from_compiler_distribution dst ]
+                | Findlib_package _pkg -> []
+              )
+            in
+            let all_files =
+              List.concat
+                [ [ runtime_js ]
+                ; js_files
+                ; js_archives_list
+                ; libs_cma_js
+                ; sub_cmos_in_correct_order
+                ]
+            in
+            Js_of_ocaml.link_js_files ~dir ~files:all_files ~target:target_js
+          )
+        end
+      in
+      [ bc_dot_js_rule
+      ; Js_of_ocaml.rule_for_standalone_runtime ~build_info ~hg_version ~dir ~flags ~js_files ~target:runtime_js ]
     | (`Byte | `Native), _ -> []
   in
 
@@ -3572,7 +3683,10 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
   List.concat [
     exe_rules;
     js_of_ocaml_rules;
-    List.concat_map [findlib_archives; findlib_include_flags] ~f:Findlib.Query.rules;
+    List.concat_map ~f:Findlib.Query.rules
+      [ findlib_archives
+      ; findlib_include_flags
+      ; findlib_archives_full_path ];
     (if suppress_version_util
      then []
      else hg_version_rules ~dir ~exe:(exe ^ Mode.exe));
@@ -3731,7 +3845,9 @@ let executables_rules dc ~dir e_conf =
     Libmap.resolve_libdep_names_exn dc.libmap libraries_written_by_user
   in
   let compile_rules =
+
     setup_ml_compile_rules
+      ~js_of_ocaml
       dc ~dir ~libname ~wrapped ~for_executable ~can_setup_inline_runners
       ~preprocessor_deps ~preprocess_spec ~names_spec ~libraries_written_by_user
       ~disallowed_module_dep:(fun x ->
@@ -3778,7 +3894,7 @@ let executables_rules dc ~dir e_conf =
           in
           let not_exe_sufs, exe_sufs =
             if Compiler_selection.m32 && Option.is_some js_of_ocaml
-            then [".cmo"; ".cmx"], [Js_of_ocaml.suf; exe_suf]
+            then [".cmo"; ".cmx"], [Js_of_ocaml.exe_suf; exe_suf]
             else [".cmx"], [exe_suf]
           in
           if link_executables && e_conf.link_executables
@@ -4191,7 +4307,7 @@ let inline_tests_script_rule ~dir ~libname ~javascript ~script:target ~flags =
     else
       let command, args =
         if javascript
-        then nodejs ^ " ./inline_tests_runner.bc.js", " -drop-tag no-js"
+        then nodejs ^ " ./inline_tests_runner" ^ Js_of_ocaml.exe_suf, " -drop-tag no-js"
         else "./inline_tests_runner.exe", " -drop-tag js-only"
       in
       sprintf !{|exec %s inline-test-runner %{quote}%s %{concat_quoted} "$@"|}
@@ -4398,7 +4514,7 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
                 then run ~exe_deps:[exe ^ ".exe"] exe
                 else return ()
               ; if Build_and_run.should_run user_config.javascript && Compiler_selection.m32
-                then run ~exe_deps:[exe ^ ".bc.js"] exe_js
+                then run ~exe_deps:[exe ^ Js_of_ocaml.exe_suf] exe_js
                 else return ()
               ]
         ]]
@@ -4474,6 +4590,7 @@ let ocaml_libraries : [< Jbuild.t ] -> _ = function
   | `unified_tests _ -> []
   | `toplevel_expect_tests x -> Toplevel_expect_tests_interpret.libraries x
   | `public_repo _ -> []
+  | `html _ -> []
 ;;
 
 let resolved_ocaml_libraries (dc : DC.t) jbuild =
@@ -4495,6 +4612,7 @@ let xlibnames : Jbuild.t -> _ = function
   | `unified_tests _ -> []
   | `toplevel_expect_tests _ -> []
   | `public_repo _ -> []
+  | `html _ -> []
 ;;
 
 let extra_disabled_warnings : Jbuild.t -> _ = function
@@ -4513,6 +4631,7 @@ let extra_disabled_warnings : Jbuild.t -> _ = function
   | `unified_tests _ -> []
   | `toplevel_expect_tests _ -> []
   | `public_repo _ -> []
+  | `html _ -> []
 ;;
 
 let pps_of_jbuild (dc : DC.t) jbuild_item =
@@ -4536,6 +4655,7 @@ let pps_of_jbuild (dc : DC.t) jbuild_item =
   | `unified_tests _
   | `toplevel_expect_tests _
   | `public_repo _
+  | `html _
     -> []
 
 let generate_dep_rules dc ~dir jbuilds =
@@ -4733,6 +4853,45 @@ module Library_conf_interpret = struct
 
 end
 
+let library_rules_javascript ~libmap ~dir ~js_of_ocaml ~libname =
+  match js_of_ocaml with
+  | None -> []
+  | Some js_of_ocaml ->
+    let { Js_of_ocaml_conf.javascript_files; flags; _ } = js_of_ocaml in
+    let check_dependencies =
+      Rule.alias (Alias.default ~dir) [
+        (Libmap.load_lib_deps libmap (LN.suffixed ~dir libname ".libdeps")
+         *>>| fun libs ->
+         let bad_libs =
+           List.filter libs ~f:(function
+             | In_the_tree _ ->
+               false
+             | From_compiler_distribution v ->
+               not (From_compiler_distribution.supported_in_javascript v)
+             | Findlib_package _ ->
+               false)
+         in
+         if not (List.is_empty bad_libs)
+         then
+           failposf ~pos:(dummy_position (User_or_gen_config.source_file ~dir))
+             !"%{LN} is supposed to work in javascript but it has \
+               problematic dependencies: %s" libname
+             (String.concat ~sep:" " (List.map bad_libs ~f:Lib_dep.to_string)) ())
+      ]
+    in
+    let javascript_files_dep =
+      let files = List.map javascript_files ~f:(Path.relative_or_absolute ~dir) in
+      Js_of_ocaml_jsdeps.rule ~dir libname files
+    in
+    let js_compile_cma =
+      let cma_without_suf = LN.to_string libname in
+      let src    = Path.relative ~dir (cma_without_suf ^ ".cma") in
+      let target = Path.relative ~dir (cma_without_suf ^ Js_of_ocaml.cma_suf) in
+      let js_files = Dep.return [] in
+      Js_of_ocaml.rule ~build_info:None ~hg_version:None ~js_files ~dir ~flags ~src ~target
+    in
+    [ check_dependencies; javascript_files_dep; js_compile_cma ]
+
 let library_rules dc ~dir library_conf =
   let dc = Library_conf_interpret.extend_dc library_conf dc in
   let libname = Library_conf.name library_conf in
@@ -4766,6 +4925,9 @@ let library_rules dc ~dir library_conf =
       dc ~dir ~libname ~wrapped ~for_executable ~can_setup_inline_runners
       ~preprocessor_deps ~preprocess_spec ~names_spec
       ~libraries_written_by_user
+      (* Don't setup [.cmo -> .cmo.js] rule for libraries.
+         It's not needed by separate compilation. *)
+      ~js_of_ocaml:None
   in
   let c_names = Library_conf.c_names library_conf in
   let o_names = Library_conf_interpret.o_names ~dir library_conf in
@@ -4866,29 +5028,10 @@ let library_rules dc ~dir library_conf =
       renaming_rules ~dir ~libname ~modules
       @ ocaml_library_archive dc ~wrapped ~dir ~libname ~flags:lib_flags ~impls
   in
-  let check_dependencies_if_javascript =
-    match library_conf.js_of_ocaml with
-    | None -> []
-    | Some { flags = _} ->
-      [Rule.alias (Alias.default ~dir) [
-         (Libmap.load_lib_deps dc.libmap (LN.suffixed ~dir libname ".libdeps")
-          *>>| fun libs ->
-          let bad_libs =
-            List.filter libs ~f:(function
-              | In_the_tree _ ->
-                false
-              | From_compiler_distribution v ->
-                not (From_compiler_distribution.supported_in_javascript v)
-              | Findlib_package _ ->
-                false)
-          in
-          if not (List.is_empty bad_libs)
-          then
-            failposf ~pos:(dummy_position (User_or_gen_config.source_file ~dir))
-              !"%{LN} is supposed to work in javascript but it has \
-                problematic dependencies: %s" libname
-              (String.concat ~sep:" " (List.map bad_libs ~f:Lib_dep.to_string)) ())
-       ]]
+  let js_rules =
+    library_rules_javascript
+      ~dir ~libmap:dc.libmap ~libname
+      ~js_of_ocaml:library_conf.js_of_ocaml
   in
   let skip_from_default = Library_conf_interpret.skip_from_default library_conf in
   let default_targets =
@@ -4935,8 +5078,8 @@ let library_rules dc ~dir library_conf =
     inline_tests_rules dc ~lib_in_the_tree ~skip_from_default
       ~js_of_ocaml:library_conf.js_of_ocaml
       ~user_config:(Library_conf_interpret.inline_tests library_conf);
+    js_rules;
     inline_bench_rules dc ~skip_from_default ~lib_in_the_tree;
-    check_dependencies_if_javascript;
     [doc_alias];
   ]
 
@@ -4984,6 +5127,7 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
     | `toplevel_expect_tests conf ->
       toplevel_expect_tests_rules dc ~dir conf
     | `public_repo conf -> Public_release.rules dc ~dir conf
+    | `html conf -> Html.rules ~dir conf
   )
 
 let rules_with_directory_context dc ~dir jbuilds =
@@ -5018,7 +5162,8 @@ let rules_without_directory_context ~dir jbuilds =
        | `requires_camlp4
        | `unified_tests _
        | `toplevel_expect_tests _
-       | `public_repo _ -> []))
+       | `public_repo _
+       | `html _ -> []))
 ;;
 
 (*----------------------------------------------------------------------
@@ -5434,6 +5579,8 @@ let scheme ~dir =
             setup_odoc ~dir `Compile
           else if parent_dir = Odoc.html_output_dir then
             setup_odoc ~dir `Link
+          else if Path.is_descendant ~dir:Js_of_ocaml.dot_js_dir dir then
+            Js_of_ocaml.setup_dot_js_dir ~ocaml_where:ocaml_where_path dir
           (* Otherwise, the directory is a normal "source" directory. *)
           else
             Scheme.dep (

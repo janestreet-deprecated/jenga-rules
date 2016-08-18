@@ -36,6 +36,17 @@ val archives
   -> Lib_dep.t list Dep.t
   -> string list Query.t
 
+val archives_full_path
+  :  Ocaml_mode.t
+  -> dir:Path.t
+  -> exe:string
+  -> Lib_dep.t list Dep.t
+  -> string list Query.t
+
+(** The directory where the ocamlfind packages are installed, like .liblinks for us,
+    if findlib is enabled. *)
+val destdir : Path.t Dep.t option
+
 val global_rules : Rule.t list
 
 val use_findlib : bool

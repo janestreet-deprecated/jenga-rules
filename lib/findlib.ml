@@ -46,15 +46,24 @@ let ocamlfind =
 
 let package_listing_path = root_relative ".findlib-packages"
 
+let destdir_internal =
+  ocamlfind *>>= fun ocamlfind ->
+  (* Watch the global package installation directory so that we are notified of new
+     packages *)
+  Dep.action_stdout
+    (return (Action.process ~dir:Path.the_root ocamlfind ["printconf"; "destdir"]))
+  *>>| fun destdir -> Path.absolute (String.strip destdir)
+
+let destdir =
+  if use_findlib
+  then Some destdir_internal
+  else None
+
 let package_listing_rule =
   Rule.create ~targets:[package_listing_path] (
+    destdir_internal *>>= fun destdir ->
     ocamlfind *>>= fun ocamlfind ->
-    (* Watch the global package installation directory so that we are notified of new
-       packages *)
-    Dep.action_stdout
-      (return (Action.process ~dir:Path.the_root ocamlfind ["printconf"; "destdir"]))
-    *>>= fun destdir ->
-    Dep.glob_change (Glob.create ~kinds:[`Directory] ~dir:(Path.absolute destdir) "*")
+    Dep.glob_change (Glob.create ~kinds:[`Directory] ~dir:destdir "*")
     *>>| fun () ->
     bashf ~dir:Path.the_root
       !"%{quote} list | cut -d' ' -f1 > %{quote}"
@@ -147,12 +156,17 @@ module Query = struct
     end
 end
 
-let archives_suffix     = ".external-archives"
-let include_dirs_suffix = ".external-include-flags"
+let archives_suffix           = ".external-archives"
+let archives_full_path_suffix = ".external-archives-full-path"
+let include_dirs_suffix       = ".external-include-flags"
 
 let archives (module M : Ocaml_mode.S) ~dir ~exe ?(predicates = []) deps =
   Query.create ~dir (exe ^ M.exe) deps ~format:"%a" ~suffix:archives_suffix
     ~predicates:(M.which_str :: predicates)
+
+let archives_full_path (module M : Ocaml_mode.S) ~dir ~exe deps =
+  Query.create ~dir (exe ^ M.exe) deps ~format:"%d/%a" ~suffix:archives_full_path_suffix
+    ~predicates:[M.which_str]
 
 let include_flags ~dir base lib_deps =
   Query.create ~dir base lib_deps ~format:"%d"
