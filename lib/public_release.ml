@@ -227,7 +227,7 @@ end = struct
         printf !"File \"%{Path}\", line %d:\n\
                  Error: %s\n"
           file line msg;
-        raise Exit)
+        failwithf !"%{Path}: %s" file msg ())
         fmt
 
     let in_the_tree_dependency ~of_pkg ~of_dir package_map context lib =

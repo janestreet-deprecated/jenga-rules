@@ -179,7 +179,8 @@ let x_library_inlining =
 let dynlinkable_code =
   Var.peek_register_bool "DYNLINKABLE_CODE"
     ~default:(match build_profile with
-              | `Fast_exe | `Fast_build | `Default -> false)
+             | `Fast_build | `Default -> true
+             | `Fast_exe -> false)
 
 let bin_annot =
   Var.peek_register_bool "BIN_ANNOT" ~default:true
