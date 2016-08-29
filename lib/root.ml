@@ -4442,117 +4442,118 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
     | true -> value
     | false -> []
   in
-  let exe_suf, exe_artifact = exe_artifact_in_std_aliases ~only_shared_object in
-  List.concat [
-    List.concat_map Ocaml_mode.all ~f:(fun mode ->
-      let mode = replace_exe_suffix mode ~only_shared_object in
-      link mode dc ~dir
-        ~suppress_build_info:true
-        ~suppress_version_util:true
-        ~build_libs_DEFAULT:false
-        ~more_deps:[]
-        ~link_flags:[]
-        ~allowed_ldd_dependencies:None
-        ~ocaml_plugin_handling:`Not_a_plugin
-        ~link_libdeps_of:
-          (Dep.List.concat [
-             return [(dir, libname)];
-             if_expect_tests [expect_runner_dir, fake_libname_of_exes [expect_runner]];
-             return [inline_test_runner_dir,
-                     fake_libname_of_exes [final_test_object]];
-           ])
-        ~force_link:(Some lib_in_the_tree)
-        ~test_or_bench:true
-        ~compute_objs:
-          (Dep.List.concat [
-             if_expect_tests [expect_runner_dir, expect_runner];
-             return [inline_test_runner_dir, final_test_object];
-           ])
-        ~js_of_ocaml
-        ~exe)
-  ; [ inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
-         ~script:exe_js ~runtime_environment:`Javascript;
-      inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
-        ~script:exe ~runtime_environment:(if only_shared_object then `Emacs else `Exe) ]
-  ; (match alias_for_inline_runners ~dir ~skip_from_default with
-    | None -> []
-    | Some alias ->
-      [ Rule.alias alias [
-          sources_with_tests ~dir *>>= function
-          | None -> return ()
-          | Some { inline_test = (); expect_tests = _ } ->
-            if link_executables
-            && (Build_and_run.should_build user_config.native
-                || (Build_and_run.should_build user_config.javascript
-                    && Compiler_selection.m32))
-            then begin
-              (* If building an inline test runner, also build its runtime dependencies so
-                 it's ready to be run manually. *)
-              let names =
-                List.concat [
-                  if Build_and_run.should_build user_config.native
-                  then [exe; exe ^ exe_suf]
-                  else [];
-                  if Build_and_run.should_build user_config.javascript
-                  && Compiler_selection.m32
-                  then [exe_js; exe ^ ".bc.js"]
-                  else [];
-                ]
-              in
-              Dep.all_unit (
-                List.map names ~f:(fun name -> Dep.path (relative ~dir name))
-                @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
-              )
-            end
-            else return ()
-        ];
-      ])
-  ; if (Build_and_run.should_run user_config.javascript && Compiler_selection.m32)
-    || (Build_and_run.should_run user_config.native
-        && match exe_artifact with `Cmx -> false | `Exe | `So -> true) then
-      let alias =
-        match user_config.alias with
-        | None -> Alias.runtest ~dir
-        | Some name -> Alias.create ~dir name
-      in
-      [ Rule.alias alias [
-          sources_with_tests ~dir *>>= function
-          | None -> return ()
-          | Some { inline_test = (); expect_tests = sources } ->
-            let sources = lazy (String.Set.of_list sources) in
-            let run ~exe_deps exe =
-              Dep.action_stdout
-                (run_inline_action ~dir ~exe_deps exe
-                   ~user_deps:[]
-                   ~runtime_deps:[]
-                   ~flags:["-list-partitions"]
+  match exe_artifact_in_std_aliases ~only_shared_object with
+  | _, `Cmx -> []
+  | exe_suf, (`So | `Exe) ->
+    List.concat [
+      List.concat_map Ocaml_mode.all ~f:(fun mode ->
+        let mode = replace_exe_suffix mode ~only_shared_object in
+        link mode dc ~dir
+          ~suppress_build_info:true
+          ~suppress_version_util:true
+          ~build_libs_DEFAULT:false
+          ~more_deps:[]
+          ~link_flags:[]
+          ~allowed_ldd_dependencies:None
+          ~ocaml_plugin_handling:`Not_a_plugin
+          ~link_libdeps_of:
+            (Dep.List.concat [
+               return [(dir, libname)];
+               if_expect_tests [expect_runner_dir, fake_libname_of_exes [expect_runner]];
+               return [inline_test_runner_dir,
+                       fake_libname_of_exes [final_test_object]];
+             ])
+          ~force_link:(Some lib_in_the_tree)
+          ~test_or_bench:true
+          ~compute_objs:
+            (Dep.List.concat [
+               if_expect_tests [expect_runner_dir, expect_runner];
+               return [inline_test_runner_dir, final_test_object];
+             ])
+          ~js_of_ocaml
+          ~exe)
+    ; [ inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
+           ~script:exe_js ~runtime_environment:`Javascript;
+        inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
+          ~script:exe ~runtime_environment:(if only_shared_object then `Emacs else `Exe) ]
+    ; (match alias_for_inline_runners ~dir ~skip_from_default with
+      | None -> []
+      | Some alias ->
+        [ Rule.alias alias [
+            sources_with_tests ~dir *>>= function
+            | None -> return ()
+            | Some { inline_test = (); expect_tests = _ } ->
+              if link_executables
+              && (Build_and_run.should_build user_config.native
+                  || (Build_and_run.should_build user_config.javascript
+                      && Compiler_selection.m32))
+              then begin
+                (* If building an inline test runner, also build its runtime dependencies so
+                   it's ready to be run manually. *)
+                let names =
+                  List.concat [
+                    if Build_and_run.should_build user_config.native
+                    then [exe; exe ^ exe_suf]
+                    else [];
+                    if Build_and_run.should_build user_config.javascript
+                    && Compiler_selection.m32
+                    then [exe_js; exe ^ ".bc.js"]
+                    else [];
+                  ]
+                in
+                Dep.all_unit (
+                  List.map names ~f:(fun name -> Dep.path (relative ~dir name))
+                  @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
                 )
-              *>>= fun output ->
-              let partitions = String.split_lines output in
-              Dep.all_unit (List.map partitions ~f:(fun p ->
-                Dep.action
+              end
+              else return ()
+          ];
+        ])
+    ; if (Build_and_run.should_run user_config.javascript && Compiler_selection.m32)
+      || Build_and_run.should_run user_config.native then
+        let alias =
+          match user_config.alias with
+          | None -> Alias.runtest ~dir
+          | Some name -> Alias.create ~dir name
+        in
+        [ Rule.alias alias [
+            sources_with_tests ~dir *>>= function
+            | None -> return ()
+            | Some { inline_test = (); expect_tests = sources } ->
+              let sources = lazy (String.Set.of_list sources) in
+              let run ~exe_deps exe =
+                Dep.action_stdout
                   (run_inline_action ~dir ~exe_deps exe
-                     ~user_deps:user_config.deps
-                     ~runtime_deps:
-                       (let source = p ^ ".ml" in
-                        if Set.mem (force sources) source
-                        then [ Dep.path (relative ~dir source) ]
-                        else [])
-                     ~flags:["-partition"; p]
-                  )))
-            in
-            Dep.all_unit
-              [ if Build_and_run.should_run user_config.native
-                then run ~exe_deps:[exe ^ exe_suf] exe
-                else return ()
-              ; if Build_and_run.should_run user_config.javascript && Compiler_selection.m32
-                then run ~exe_deps:[exe ^ Js_of_ocaml.exe_suf] exe_js
-                else return ()
-              ]
-        ]]
-    else
-      [];
-  ]
+                     ~user_deps:[]
+                     ~runtime_deps:[]
+                     ~flags:["-list-partitions"]
+                  )
+                *>>= fun output ->
+                let partitions = String.split_lines output in
+                Dep.all_unit (List.map partitions ~f:(fun p ->
+                  Dep.action
+                    (run_inline_action ~dir ~exe_deps exe
+                       ~user_deps:user_config.deps
+                       ~runtime_deps:
+                         (let source = p ^ ".ml" in
+                          if Set.mem (force sources) source
+                          then [ Dep.path (relative ~dir source) ]
+                          else [])
+                       ~flags:["-partition"; p]
+                    )))
+              in
+              Dep.all_unit
+                [ if Build_and_run.should_run user_config.native
+                  then run ~exe_deps:[exe ^ exe_suf] exe
+                  else return ()
+                ; if Build_and_run.should_run user_config.javascript && Compiler_selection.m32
+                  then run ~exe_deps:[exe ^ Js_of_ocaml.exe_suf] exe_js
+                  else return ()
+                ]
+          ]]
+      else
+        [];
+    ]
 
 let bench_runner_dir =
   (* inline_benchmarks_internal is not compatible with 32bit architectures. *)
