@@ -1,4 +1,5 @@
 open Core.Std
+open! No_polymorphic_compare
 
 module Unexpanded_string () : sig
   type t = private string [@@deriving of_sexp]
@@ -88,29 +89,42 @@ module Inline_tests = struct
     deps : Dep_conf.t sexp_list;
     (** Flags to pass to the inline test runner *)
     flags : string sexp_list;
+    (** The alias that runs the tests runners in *)
+    alias : string sexp_option;
     (** Should inline_tests_runner be built and run in native environment *)
     native     : build_and_run [@default `build_and_run];
     (** Should inline_tests_runner be built and run in javascript environment *)
     javascript : build_and_run [@default `dont_build_dont_run];
+    (** Should inline_tests_runner be built as a .exe or as a .so? *)
+    only_shared_object : bool [@default false];
   }
   [@@deriving of_sexp]
 
+  let will_run_tests : build_and_run -> bool = function
+    | `dont_build_dont_run
+    | `build_but_dont_run -> false
+    | `build_and_run -> true
+
   let t_of_sexp sexp =
     let t = t_of_sexp sexp in
-    if not (List.is_empty t.deps)
-    && not (t.native = `build_and_run || t.javascript = `build_and_run)
-    then
-      Sexplib.Conv.of_sexp_error
-        "inline tests deps only apply when running as part of runtest"
-        sexp;
+    let will_run_tests = will_run_tests t.native || will_run_tests t.javascript in
+    if not will_run_tests then begin
+      let fail msg = Sexplib.Conv.of_sexp_error msg sexp in
+      if not (List.is_empty t.deps)
+      then fail "inline tests deps only apply to the default way of running tests";
+      if not (Option.is_none t.alias)
+      then fail "inline tests alias only applies to the default way of running tests";
+    end;
     t
   ;;
 
   let default : t = {
     deps = [];
     flags = [];
+    alias = None;
     native = `build_and_run;
     javascript = `dont_build_dont_run;
+    only_shared_object = false;
   }
 end
 

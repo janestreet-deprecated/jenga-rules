@@ -3554,6 +3554,19 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
           | _ ->
             LL.link_flags ~dir lib_dep ~cmxa:Mode.cmxa)
       in
+      let link_flags =
+        if String.is_suffix Mode.exe ~suffix:".so"
+        || String.is_suffix Mode.exe ~suffix:".o"
+        then
+          [ "-ccopt"; "-ldl"
+          ; "-ccopt"; "-lm"
+          ; "-ccopt"; "--shared"
+          ; "-ccopt"; "-fPIC"
+          ; "-runtime-variant"; "_pic"
+          ; "-output-complete-obj"
+          ] @ link_flags
+        else link_flags
+      in
       Action.process ~dir
         (reach_from ~dir link_quietly)
         (List.concat [
@@ -3750,75 +3763,83 @@ let objdeps ~dir name =
   BN.file_words (BN.suffixed ~dir name ".objdeps")
 ;;
 
+let exe_artifact_in_std_aliases ~only_shared_object =
+  match only_shared_object, dynlinkable_code with
+  | true, false -> ".cmx", `Cmx
+  | true, true  -> ".so", `So
+  | false, _    -> ".exe", `Exe
+;;
+
+let replace_exe_suffix mode ~only_shared_object : Ocaml_mode.t =
+  if only_shared_object
+  then
+    (module struct
+      include (val mode : Ocaml_mode.S)
+      let exe =
+        match which with
+        | `Byte -> ".bc.so"
+        | `Native -> ".so"
+    end)
+  else mode
+;;
+
 let link_executable (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir ~wrapped ~libname
       ~link_flags ~projections_check ~allowed_ldd_dependencies ~js_of_ocaml
       ~only_shared_object name =
-  match Mode.which with
-  | `Byte when only_shared_object -> []
-  | (`Native | `Byte) ->
-    let (module Mode : Ocaml_mode.S), link_flags =
-      if only_shared_object
-      then (module struct include Mode let exe = ".so" end),
-            [ "-ccopt"; "-ldl"
-            ; "-ccopt"; "-lm"
-            ; "-ccopt"; "--shared"
-            ; "-ccopt"; "-fPIC"
-            ; "-runtime-variant"; "_pic"
-            ; "-output-complete-obj"
-            ] @ link_flags
-      else (module Mode), link_flags
-    in
-    let link_rules =
-      link (module Mode) (dc : DC.t) ~dir
-          ~more_deps:[]
-          ~link_flags
-          ~build_libs_DEFAULT:true
-          ~allowed_ldd_dependencies
-          ~ocaml_plugin_handling:(ocaml_plugin_handling dc ~dir name)
-          ~suppress_build_info:false
-          ~suppress_version_util:false
-          ~link_libdeps_of:(return [dir, libname])
-          ~compute_objs:
-            (objdeps ~dir name
-             *>>| fun bns ->
-             List.map (bns @ [name]) ~f:(fun name ->
-               dir, PN.to_string (PN.of_barename ~wrapped ~libname name)))
-          ~exe:(BN.to_string name)
-          ~force_link:None
-          ~test_or_bench:false
-          ~js_of_ocaml
-    in
-    let projections_check_rules =
-      (* We only care about native code, since that's how we roll production executables.
-         It shouldn't matter now, but if we start needing such checks on executable_conf
-         items that define several executables, we could have a single rule that checks the
-         dependencies of all of them at the same time. *)
-      match projections_check, Mode.which with
-      | None, _ | _, `Byte -> []
-      | Some { Jbuild_types.Projections_check.allow; output_result_to }, `Native ->
-        let exe = BN.suffixed ~dir name Mode.exe in
-        let rule =
-          match output_result_to with
-          | Some file ->
-            Fe.Projections_check.rule_for_testing
-              ~target:(relative ~dir file)
-              ~exe
-              ~allowed_projections:allow
-          | None ->
-            (* This goes in a .runtest alias because jenga takes ~4s to run the [Dep.t] at
-               the end of any build that runs it, which would slow down people working on
-               such executable for no good reason, given that these is not a likely failure,
-               and hydra will catch it anyway since it always runs .runtest. *)
-            Rule.alias (Alias.runtest ~dir) [
-              (Fe.Projections_check.error_msg_dep ~dir ~exe ~allowed_projections:allow
-               *>>| Option.iter ~f:(fun error_msg ->
-                 let source = User_or_gen_config.source_file ~dir in
-                 failposf ~pos:(dummy_position source) "%s" error_msg ()));
-            ]
-        in
-        [rule]
-    in
-    link_rules @ projections_check_rules
+  let (module Mode : Ocaml_mode.S) =
+    replace_exe_suffix (module Mode) ~only_shared_object
+  in
+  let link_rules =
+    link (module Mode) (dc : DC.t) ~dir
+        ~more_deps:[]
+        ~link_flags
+        ~build_libs_DEFAULT:true
+        ~allowed_ldd_dependencies
+        ~ocaml_plugin_handling:(ocaml_plugin_handling dc ~dir name)
+        ~suppress_build_info:false
+        ~suppress_version_util:false
+        ~link_libdeps_of:(return [dir, libname])
+        ~compute_objs:
+          (objdeps ~dir name
+           *>>| fun bns ->
+           List.map (bns @ [name]) ~f:(fun name ->
+             dir, PN.to_string (PN.of_barename ~wrapped ~libname name)))
+        ~exe:(BN.to_string name)
+        ~force_link:None
+        ~test_or_bench:false
+        ~js_of_ocaml
+  in
+  let projections_check_rules =
+    (* We only care about native code, since that's how we roll production executables.
+       It shouldn't matter now, but if we start needing such checks on executable_conf
+       items that define several executables, we could have a single rule that checks the
+       dependencies of all of them at the same time. *)
+    match projections_check, Mode.which with
+    | None, _ | _, `Byte -> []
+    | Some { Jbuild_types.Projections_check.allow; output_result_to }, `Native ->
+      let exe = BN.suffixed ~dir name Mode.exe in
+      let rule =
+        match output_result_to with
+        | Some file ->
+          Fe.Projections_check.rule_for_testing
+            ~target:(relative ~dir file)
+            ~exe
+            ~allowed_projections:allow
+        | None ->
+          (* This goes in a .runtest alias because jenga takes ~4s to run the [Dep.t] at
+             the end of any build that runs it, which would slow down people working on
+             such executable for no good reason, given that these is not a likely failure,
+             and hydra will catch it anyway since it always runs .runtest. *)
+          Rule.alias (Alias.runtest ~dir) [
+            (Fe.Projections_check.error_msg_dep ~dir ~exe ~allowed_projections:allow
+             *>>| Option.iter ~f:(fun error_msg ->
+               let source = User_or_gen_config.source_file ~dir in
+               failposf ~pos:(dummy_position source) "%s" error_msg ()));
+          ]
+      in
+      [rule]
+  in
+  link_rules @ projections_check_rules
 ;;
 
 let executables_rules dc ~dir e_conf =
@@ -3887,12 +3908,7 @@ let executables_rules dc ~dir e_conf =
         check_no_dead_code @
         List.concat_map names ~f:(fun name ->
           let prefixed_name = PN.of_barename ~wrapped ~libname name in
-          let exe_suf =
-            match only_shared_object, dynlinkable_code with
-            | true, false -> ".cmx"
-            | true, true  -> ".so"
-            | false, _    -> ".exe"
-          in
+          let exe_suf, _ = exe_artifact_in_std_aliases ~only_shared_object in
           let not_exe_sufs, exe_sufs =
             if Compiler_selection.m32 && Option.is_some js_of_ocaml
             then [".cmo"; ".cmx"], [Js_of_ocaml.exe_suf; exe_suf]
@@ -4300,16 +4316,20 @@ let jane_script_rules dc
  inline_tests & benchmarks
 ----------------------------------------------------------------------*)
 
-let inline_tests_script_rule ~dir ~libname ~javascript ~script:target ~flags =
+let inline_tests_script_rule ~dir ~libname ~runtime_environment ~script:target ~flags =
   let nodejs = "/j/office/app/nodejs/prod/v4.4.7/bin/node" in
+  let emacs  = "/j/igm/app/emacs/builds/25.1/bin/emacs"    in
   let run =
     if drop_test
     then "echo >&2 'Tests have been disabled'; exit 1"
     else
       let command, args =
-        if javascript
-        then nodejs ^ " ./inline_tests_runner" ^ Js_of_ocaml.exe_suf, " -drop-tag no-js"
-        else "./inline_tests_runner.exe", " -drop-tag js-only"
+        match runtime_environment with
+        | `Javascript ->
+          nodejs ^ " ./inline_tests_runner" ^ Js_of_ocaml.exe_suf, " -drop-tag no-js"
+        | `Emacs ->
+          emacs ^ " -Q -L . -batch -l inline_tests_runner -- ", " -drop-tag js-only"
+        | `Exe -> "./inline_tests_runner.exe", " -drop-tag js-only"
       in
       sprintf !{|exec %s inline-test-runner %{quote}%s %{concat_quoted} "$@"|}
         command (LN.to_string libname) args flags
@@ -4413,6 +4433,7 @@ let expect_runner_dir, expect_runner =
 let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
       ~(user_config : Inline_tests.t) ~js_of_ocaml =
   let { Lib_in_the_tree. source_path = dir; name = libname; _ } = lib_in_the_tree in
+  let only_shared_object = user_config.only_shared_object in
   let exe = "inline_tests_runner" in
   let exe_js = exe ^ "_js" in
   let if_expect_tests value =
@@ -4421,8 +4442,10 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
     | true -> value
     | false -> []
   in
+  let exe_suf, exe_artifact = exe_artifact_in_std_aliases ~only_shared_object in
   List.concat [
     List.concat_map Ocaml_mode.all ~f:(fun mode ->
+      let mode = replace_exe_suffix mode ~only_shared_object in
       link mode dc ~dir
         ~suppress_build_info:true
         ~suppress_version_util:true
@@ -4447,43 +4470,52 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
            ])
         ~js_of_ocaml
         ~exe)
-  ; [ inline_tests_script_rule ~dir ~libname ~javascript:true ~script:exe_js ~flags:user_config.flags;
-      inline_tests_script_rule ~dir ~libname ~javascript:false ~script:exe ~flags:user_config.flags ]
+  ; [ inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
+         ~script:exe_js ~runtime_environment:`Javascript;
+      inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
+        ~script:exe ~runtime_environment:(if only_shared_object then `Emacs else `Exe) ]
   ; (match alias_for_inline_runners ~dir ~skip_from_default with
     | None -> []
     | Some alias ->
       [ Rule.alias alias [
-        sources_with_tests ~dir *>>= function
-        | None -> return ()
-        | Some { inline_test = (); expect_tests = _ } ->
-          if link_executables &&
-             (Build_and_run.should_build user_config.native ||
-              (Build_and_run.should_build user_config.javascript && Compiler_selection.m32))
-          then begin
-            (* If building an inline test runner, also build its runtime dependencies so
-               it's ready to be run manually. *)
-            let names =
-              List.concat [
-                if Build_and_run.should_build user_config.native
-                then [exe; exe ^ ".exe"]
-                else [];
-                if Build_and_run.should_build user_config.javascript && Compiler_selection.m32
-                then [exe_js; exe ^ ".bc.js"]
-                else [];
-              ]
-            in
-
-            Dep.all_unit (
-              List.map names ~f:(fun name -> Dep.path (relative ~dir name))
-              @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
-            )
-          end
-          else return ()
+          sources_with_tests ~dir *>>= function
+          | None -> return ()
+          | Some { inline_test = (); expect_tests = _ } ->
+            if link_executables
+            && (Build_and_run.should_build user_config.native
+                || (Build_and_run.should_build user_config.javascript
+                    && Compiler_selection.m32))
+            then begin
+              (* If building an inline test runner, also build its runtime dependencies so
+                 it's ready to be run manually. *)
+              let names =
+                List.concat [
+                  if Build_and_run.should_build user_config.native
+                  then [exe; exe ^ exe_suf]
+                  else [];
+                  if Build_and_run.should_build user_config.javascript
+                  && Compiler_selection.m32
+                  then [exe_js; exe ^ ".bc.js"]
+                  else [];
+                ]
+              in
+              Dep.all_unit (
+                List.map names ~f:(fun name -> Dep.path (relative ~dir name))
+                @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
+              )
+            end
+            else return ()
         ];
       ])
   ; if (Build_and_run.should_run user_config.javascript && Compiler_selection.m32)
-    || Build_and_run.should_run user_config.native then
-      [ Rule.alias (Alias.runtest ~dir) [
+    || (Build_and_run.should_run user_config.native
+        && match exe_artifact with `Cmx -> false | `Exe | `So -> true) then
+      let alias =
+        match user_config.alias with
+        | None -> Alias.runtest ~dir
+        | Some name -> Alias.create ~dir name
+      in
+      [ Rule.alias alias [
           sources_with_tests ~dir *>>= function
           | None -> return ()
           | Some { inline_test = (); expect_tests = sources } ->
@@ -4509,10 +4541,9 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
                      ~flags:["-partition"; p]
                   )))
             in
-
             Dep.all_unit
               [ if Build_and_run.should_run user_config.native
-                then run ~exe_deps:[exe ^ ".exe"] exe
+                then run ~exe_deps:[exe ^ exe_suf] exe
                 else return ()
               ; if Build_and_run.should_run user_config.javascript && Compiler_selection.m32
                 then run ~exe_deps:[exe ^ Js_of_ocaml.exe_suf] exe_js
