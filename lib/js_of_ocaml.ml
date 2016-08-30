@@ -193,6 +193,6 @@ let rule_for_standalone_runtime ~build_info ~hg_version ~dir ~flags ~js_files ~t
 
 let link_js_files ~dir ~files ~target =
   Dep.all_unit (List.map ~f:Dep.path files) *>>| fun () ->
-  bashf ~dir !"cat -- %{concat_quoted} > %{quote}"
+  bashf ~dir !"for f in %{concat_quoted}; do cat -- \"${f}\"; echo; done > %{quote}"
     (List.map files ~f:(reach_from ~dir))
     (reach_from ~dir target)
