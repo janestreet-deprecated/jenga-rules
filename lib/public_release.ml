@@ -379,6 +379,7 @@ end = struct
           ?libraries_override
           ~(extra_deps : Library_conf.Public_release.extra_dep list)
           ?(extra_opam_deps=[])
+          ?(needs_include=false) (* Do we need the global include/ directory? *)
           ~(conf       : Public_repo.t) ~dir () =
       let module D = T.Buildable.Dependency in
 
@@ -478,6 +479,19 @@ end = struct
       in
       let dependencies = dependencies @ extra_deps in
 
+      let dependencies =
+        if not needs_include then
+          dependencies
+        else
+          { kind     = Global (T.Buildable.Dependency.Global.of_ocamlfind_package
+                                 "jane-street-headers")
+          ; context  = Build
+          ; internal = true
+          ; lib_kind = Normal
+          ; wrapper  = None
+          } :: dependencies
+      in
+
       let preprocessor_deps =
         List.filter_map preprocessor_deps ~f:(function
           | File fn -> Some (Filename.basename fn)
@@ -526,7 +540,27 @@ end = struct
       in
       let c_files = h_files @ List.map c_names ~f:(fun s -> s ^ ".c") in
       (* Special case for re2 *)
-      let c_files = if LN.to_string name = "re2" then [] else c_files in
+      let is_re2 = LN.to_string name = "re2" in
+      let c_files = if is_re2 then [] else c_files in
+
+      (* Detect if we need the global include/ directory *)
+      (if is_re2 then
+         return false
+       else
+         let deps_files = List.map c_names ~f:(fun s -> s ^ ".deps") in
+         Dep.all_unit (List.map deps_files ~f:(fun fn ->
+           Dep.path (Path.relative ~dir fn)))
+         *>>= fun () ->
+         Dep.action_stdout
+           (return
+              (bashf ~dir "grep -Eq '^([.][.]/)*include/' -- %s || echo -n not-found"
+                 (List.map deps_files ~f:quote |> String.concat ~sep:" ")))
+         *>>| function
+         | "not-found" -> false
+         | "" -> true
+         | output -> raise_s [%message [%here] "unexpected output from grep"
+                                         (output : string)]
+      ) *>>= fun needs_include ->
 
       Lib_modules.load ~dir ~libname:name
       *>>= fun modules ->
@@ -535,6 +569,7 @@ end = struct
       make_buildable dc ~conf ~package_map ~dir ~pkg_name
         ~jbuild:(jbuild :> [ `executables of _ | `library of _ ])
         ~extra_deps:info.extra_deps ~extra_opam_deps:info.extra_opam_deps
+        ~needs_include
         ?libraries_override:info.libraries ()
       *>>| fun (buildable, virtual_opam_deps) ->
       (buildable, virtual_opam_deps,
