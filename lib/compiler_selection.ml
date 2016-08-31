@@ -26,3 +26,5 @@ let with_frame_pointers = get_bool "with_frame_pointers"
 let m32 = List.mem ["i386"] (get_conf "architecture")
 
 let pa_macro_flags = []
+
+let odoc_minor_version = ""

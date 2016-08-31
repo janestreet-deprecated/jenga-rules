@@ -1,6 +1,6 @@
 (library
  ((name jenga_rules)
   (public_name jenga-rules)
-  (libraries (jenga_lib re2))
+  (libraries (jenga_lib re.pcre))
   (skip_from_default true)
   (inline_tests ((native dont_build_dont_run)))))

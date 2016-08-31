@@ -23,7 +23,9 @@ let delete_if_depended_upon =
          Action.process ~ignore_stderr:true ~dir "hg" [ "debugignore" ])
       *>>| fun stdout ->
       let stdout = Option.value ~default:stdout (String.chop_suffix stdout ~suffix:"\n") in
-      Some (Path.basename dir, Re2.Std.Re2.create_exn ("^" ^ stdout))
+      (* avoid considering everything is ignored if the hgignore is empty *)
+      let stdout = if String.is_empty stdout then "a^" else stdout in
+      Some (Path.basename dir, Re.compile (Re_pcre.re ("^" ^ stdout)))
     | _ -> return None
   in
   Dep.both
@@ -35,7 +37,7 @@ let delete_if_depended_upon =
     match opt with
     | None -> false
     | Some (_, re) ->
-      Re2.Std.Re2.matches re path
+      Re.execp re path
   in
   fun ~non_target:path ->
     Path.is_descendant ~dir:Path.the_root path &&
@@ -49,6 +51,6 @@ let delete_if_depended_upon =
       | None -> find_in_root path
       | Some (main, rest) ->
         match Hashtbl.find table main with
-        | Some re -> Re2.Std.Re2.matches re rest
+        | Some re -> Re.execp re rest
         | None -> find_in_root path
 ;;

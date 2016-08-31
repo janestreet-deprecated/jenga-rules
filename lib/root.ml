@@ -219,7 +219,10 @@ let for_javascript_development =
   (* Select the right options / compilation mode to provide
      a faster development loop and
      a better debugging experience. *)
-  Var.peek_register_bool "FOR_JS_DEVEL" ~default:false
+  Var.peek_register_bool "FOR_JS_DEVEL"
+    ~default:(match build_profile with
+             | `Fast_build | `Default -> true
+             | `Fast_exe -> false)
 
 let unbox_closures = Var.peek_register_bool "WITH_UNBOX_CLOSURES" ~default:true
 
@@ -1891,7 +1894,6 @@ let expand_pps names =
   let flags, pp_names = List.partition_tf names ~f:(String.is_prefix ~prefix:"-") in
   let pps =
     PP.remove_dups_preserve_order (
-      List.map ~f:PP.of_string ["pa_untabbed"] @
       List.concat_map pp_names ~f:(function
       | "JANE" -> Preprocessors.jane
       | "JANE_KERNEL" -> Preprocessors.jane_kernel
@@ -1926,7 +1928,6 @@ let eval_names_spec ~dc names_spec =
 let remap_pa_string =
   (* convert camlp4 preprocessor names (pa_) to replacement ppx version *)
   function
-  | "pa_untabbed" (* for compatibility with ppx *)
   | "pa_macro"    (* provided by optcomp, which is linked in ppx_driver *)
     -> None
   | "pa_test" -> Some "ppx_assert"
@@ -3021,13 +3022,15 @@ module Ordering = struct
           let dir = Filename.dirname target in
           let base = Filename.basename target in
           let cycle = find_shortest_cycle_using_floyd_warshal ~dir alist in
+          let cycle_message = [%message "dependency cycle" ~_:(cycle : BN.t list)] in
           (* putting the output if whatever format will please the omake-mode *)
           printf "\n- build %s %s" dir base;
           printf "File \"jbuild\", line 1, characters 1-1:";
-          printf "Error: dependency cycle: %s"
-            (String.concat ~sep:" " (List.map cycle ~f:BN.to_string));
+          printf !"Error: %{Sexp}" cycle_message;
           printf "- exit %s %s" dir base;
-          raise Exit
+          (* put [cycle_message] in the thrown exception, so it gets sent on the error RPC *)
+          Error.raise_s cycle_message
+
         | Some mod_ ->
           let alist = List.filter alist ~f:(fun (mod', _) -> BN.(<>) mod_ mod') in
           let alist = List.map alist ~f:(fun (mod1, deps) ->
@@ -4373,7 +4376,7 @@ let run_inline_action ~dir ~user_deps ~exe_deps ~flags ~runtime_deps filename =
    *>>| fun () ->
    let args =
      (* Longer timeout for the javascript tests, which are sometimes much slower. *)
-     [ (if Compiler_selection.m32 then "90" else "60")
+     [ (if Compiler_selection.m32 then "120" else "60")
      ; "./" ^ filename
      ]
      @ flags

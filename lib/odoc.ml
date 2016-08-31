@@ -9,7 +9,8 @@ let odoc_path =
     | None -> Compiler_selection.major_version
     | Some (s, _) -> s
   in
-  sprintf "/j/office/app/codoc/dev/%s/odoc" major_version
+  sprintf "/j/office/app/codoc/dev/%s/odoc%s" major_version
+    Compiler_selection.odoc_minor_version
 
 let alias ~dir = Alias.create ~dir "doc"
 
