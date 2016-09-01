@@ -384,6 +384,9 @@ let root_var_table = [
   "ALLOW_HARDWARE_SPECIALIZATION", Bool.to_string allow_hardware_specialization;
 ] @ External_apis.root_var_table
 
+let javascript_enabled = Compiler_selection.m32
+let javascript_separate_compilation = for_javascript_development
+
 let root_var_lookup =
   let lookup = table_to_lookup ~table:root_var_table in
   fun ~dir ~var_name ->
@@ -3601,7 +3604,7 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
 
   let js_of_ocaml_rules =
     match Mode.which, js_of_ocaml with
-    | `Byte, Some { Js_of_ocaml_conf.flags; javascript_files } when Compiler_selection.m32 ->
+    | `Byte, Some { Js_of_ocaml_conf.flags; javascript_files } when javascript_enabled ->
       let target_js = suffixed ~dir exe Js_of_ocaml.exe_suf in
       let javascript_files = List.map ~f:(Path.relative_or_absolute ~dir) javascript_files in
       let js_files : Path.t list Dep.t =
@@ -3629,7 +3632,7 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       in
       let runtime_js = suffixed ~dir exe Js_of_ocaml.runtime_suf in
       let bc_dot_js_rule =
-        if not for_javascript_development
+        if not javascript_separate_compilation
         then begin
           let bytecode_exe = suffixed ~dir exe Mode.exe in
           Js_of_ocaml.rule ~build_info ~hg_version ~dir ~flags ~js_files ~src:bytecode_exe ~target:target_js
@@ -3913,7 +3916,7 @@ let executables_rules dc ~dir e_conf =
           let prefixed_name = PN.of_barename ~wrapped ~libname name in
           let exe_suf, _ = exe_artifact_in_std_aliases ~only_shared_object in
           let not_exe_sufs, exe_sufs =
-            if Compiler_selection.m32 && Option.is_some js_of_ocaml
+            if javascript_enabled && Option.is_some js_of_ocaml
             then [".cmo"; ".cmx"], [Js_of_ocaml.exe_suf; exe_suf]
             else [".cmx"], [exe_suf]
           in
@@ -4376,7 +4379,7 @@ let run_inline_action ~dir ~user_deps ~exe_deps ~flags ~runtime_deps filename =
    *>>| fun () ->
    let args =
      (* Longer timeout for the javascript tests, which are sometimes much slower. *)
-     [ (if Compiler_selection.m32 then "120" else "60")
+     [ (if javascript_enabled then "120" else "60")
      ; "./" ^ filename
      ]
      @ flags
@@ -4489,7 +4492,7 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
               if link_executables
               && (Build_and_run.should_build user_config.native
                   || (Build_and_run.should_build user_config.javascript
-                      && Compiler_selection.m32))
+                      && javascript_enabled))
               then begin
                 (* If building an inline test runner, also build its runtime dependencies so
                    it's ready to be run manually. *)
@@ -4499,7 +4502,7 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
                     then [exe; exe ^ exe_suf]
                     else [];
                     if Build_and_run.should_build user_config.javascript
-                    && Compiler_selection.m32
+                    && javascript_enabled
                     then [exe_js; exe ^ ".bc.js"]
                     else [];
                   ]
@@ -4512,7 +4515,7 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
               else return ()
           ];
         ])
-    ; if (Build_and_run.should_run user_config.javascript && Compiler_selection.m32)
+    ; if (Build_and_run.should_run user_config.javascript && javascript_enabled)
       || Build_and_run.should_run user_config.native then
         let alias =
           match user_config.alias with
@@ -4549,7 +4552,7 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
                 [ if Build_and_run.should_run user_config.native
                   then run ~exe_deps:[exe ^ exe_suf] exe
                   else return ()
-                ; if Build_and_run.should_run user_config.javascript && Compiler_selection.m32
+                ; if Build_and_run.should_run user_config.javascript && javascript_enabled
                   then run ~exe_deps:[exe ^ Js_of_ocaml.exe_suf] exe_js
                   else return ()
                 ]
@@ -4560,7 +4563,7 @@ let inline_tests_rules dc ~skip_from_default ~lib_in_the_tree
 
 let bench_runner_dir =
   (* inline_benchmarks_internal is not compatible with 32bit architectures. *)
-  if Compiler_selection.m32
+  if Compiler_selection.m32 || javascript_enabled
   then root_relative "lib/core_bench/inline_benchmarks_runner_lib_public/bin"
   else root_relative "lib/core_bench/inline_benchmarks_runner_lib_internal/bin"
 
