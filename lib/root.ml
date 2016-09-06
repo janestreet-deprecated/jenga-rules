@@ -5090,12 +5090,16 @@ let library_rules dc ~dir library_conf =
     ; source_path = dir
     }
   in
+  let odoc_dir = relative ~dir:Odoc.odoc_output_dir (LN.to_string libname) in
+  let html_dir = relative ~dir:Odoc.html_output_dir (LN.to_string libname) in
+  let odoc_serve_script, odoc_serve_script_rule =
+    Odoc.generate_http_server ~src_dir:dir ~odoc_html_dir:html_dir libname
+  in
   let doc_alias =
-    let odoc_dir = relative ~dir:Odoc.odoc_output_dir (LN.to_string libname) in
-    let html_dir = relative ~dir:Odoc.html_output_dir (LN.to_string libname) in
     Rule.alias (Odoc.alias ~dir)
       [ Dep.alias (Odoc.alias ~dir:odoc_dir)
-      ; Dep.alias (Odoc.alias ~dir:html_dir) ]
+      ; Dep.alias (Odoc.alias ~dir:html_dir)
+      ; Dep.path odoc_serve_script ]
   in
   List.concat [
     [gen_interface_deps_from_objinfo dc ~dir ~wrapped ~libname ~libraries_written_by_user];
@@ -5119,7 +5123,7 @@ let library_rules dc ~dir library_conf =
       ~user_config:(Library_conf_interpret.inline_tests library_conf);
     js_rules;
     inline_bench_rules dc ~skip_from_default ~lib_in_the_tree;
-    [doc_alias];
+    [doc_alias; odoc_serve_script_rule];
   ]
 
 (*----------------------------------------------------------------------

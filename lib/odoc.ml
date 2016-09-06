@@ -155,7 +155,45 @@ let odoc_link_rules ~dir ~search_paths ~libname =
          input :: rule :: rules)
     )
   in
-  Rule.alias (alias ~dir) (List.map targets ~f:Dep.path) :: rules
+  let css_target, copy_css =
+    let target = Path.relative ~dir "odoc.css" in
+    let rule =
+      Rule.simple ~targets:[target] ~deps:[]
+        ~action:(Action.process ~dir odoc_path [ "css"; "-o"; "." ])
+    in
+    target, rule
+  in
+  Rule.alias (alias ~dir) (List.map (css_target :: targets) ~f:Dep.path)
+  :: copy_css :: rules
+
+let generate_http_server ~src_dir ~odoc_html_dir libname =
+  let script =
+    sprintf !{|#!/bin/bash
+cd "$(dirname "${BASH_SOURCE[0]}")"/%{quote}
+python -m SimpleHTTPServer ${1-8000} &
+server_pid=$!
+
+function kill_server() {
+  kill $server_pid 2> /dev/null
+  exit 0
+}
+
+trap kill_server INT
+echo "Go to http://$(hostname):${1-8000}/%s/%s"
+while true; do
+  sleep 10000
+done
+|}
+      (Path.reach_from ~dir:src_dir html_output_dir)
+      (LN.to_string libname)
+      (LN.to_module libname)
+  in
+  let target = Path.relative ~dir:src_dir "serve_doc" in
+  target, Rule.create ~targets:[target] (
+    Dep.alias (alias ~dir:odoc_html_dir)
+    *>>| fun () ->
+    Action.save ~chmod_x:() script ~target
+  )
 
 let setup ~dir ~lib_in_the_tree:(lib:Lib_in_the_tree.t) ~lib_deps step =
   lib_deps *>>= fun libraries ->
