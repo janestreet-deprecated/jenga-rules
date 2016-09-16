@@ -1,5 +1,5 @@
-
 open Core.Std
+open! Import
 
 type t = Sexp.t [@@deriving of_sexp]
 

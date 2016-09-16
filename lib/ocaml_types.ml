@@ -90,6 +90,8 @@ end = struct
   let of_libname = LN.to_string
 end
 
+module Artifact_name : Identifiable = String
+
 module Lib_in_the_tree = struct
   type t =
     { name        : LN.t
@@ -215,7 +217,9 @@ module Lib_dep : sig
     | From_compiler_distribution of From_compiler_distribution.t
     | In_the_tree                of Lib_in_the_tree.t
     | Findlib_package            of Findlib_package.t
-  [@@deriving sexp_of, compare]
+  [@@deriving sexp_of]
+
+  include Comparable.S with type t := t
 
   val to_string : t -> string
 

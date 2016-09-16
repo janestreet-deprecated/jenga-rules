@@ -1,5 +1,5 @@
 open Core.Std
-open! No_polymorphic_compare
+open! Import
 
 module Unexpanded_string () : sig
   type t = private string [@@deriving of_sexp]
@@ -45,6 +45,7 @@ let preprocess_default = [
   (`pps unexpanded_pps_default, Ordered_set_lang.standard)
 ]
 
+module Artifact_name = Ocaml_types.Artifact_name
 module Libname = Ocaml_types.Libname
 module Libdep_name = Ocaml_types.Libdep_name
 module Findlib_package_name = Ocaml_types.Findlib_package_name
@@ -445,6 +446,28 @@ module Html_conf = struct
   [@@deriving of_sexp]
 end
 
+module Provides_conf = struct
+  type t =
+    { name : Artifact_name.t
+    ; file : string
+    }
+
+  let t_of_sexp : Sexp.t -> t = function
+    | Atom s ->
+      { name = Artifact_name.of_string s
+      ; file =
+          match String.lsplit2 s ~on:':' with
+          | None        -> s
+          | Some (_, s) -> s
+      }
+    | List [Atom s; List [Atom "file"; Atom file]] ->
+      { name = Artifact_name.of_string s
+      ; file
+      }
+    | sexp ->
+      of_sexp_error "[<name>] or [<name> (file <file>)] expected" sexp
+end
+
 module Jbuild = struct
   (* [Jbuild.t] describes the various kinds of build configuration descriptions.
      A jbuild file contains the sexp-representation of a list of [Jbuild.t]
@@ -476,6 +499,7 @@ module Jbuild = struct
   | `requires_camlp4
   | `public_repo of Public_repo.t
   | `html of Html_conf.t
+  | `provides of Provides_conf.t sexp_list
   ]
   [@@deriving of_sexp]
 end

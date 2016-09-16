@@ -1,8 +1,8 @@
-
 (* This file is shared between jenga/root.ml and public-release/bin. Jenga passes the
    metadata by writing a .sexp file. *)
 
 open Core.Std
+open String.Replace_polymorphic_compare
 
 let opam_of_ocamlfind = function
   | "threads" -> "base-threads"
@@ -23,12 +23,12 @@ module Library = struct
       | Normal
       | Ppx_rewriter         (** Need to build a standalone ppx executable *)
       | Ppx_type_conv_plugin (** Need to build a ppx_deriving plugin       *)
-    [@@deriving bin_io, sexp]
+    [@@deriving bin_io, compare, sexp]
   end
 
   module Oasis_kind = struct
     type t = Library | Object
-    [@@deriving bin_io, sexp]
+    [@@deriving bin_io, compare, sexp]
   end
 
   type t =
@@ -43,13 +43,13 @@ module Library = struct
     ; modules       : string list   [@default []]
     ; path          : string
     }
-  [@@deriving bin_io, sexp]
+  [@@deriving bin_io, compare, sexp]
 end
 
 module Executable = struct
   module Mode = struct
     type t = Best | Both | Bytecode | Native
-    [@@deriving bin_io, sexp]
+    [@@deriving bin_io, compare, sexp]
   end
 
   type t =
@@ -59,14 +59,14 @@ module Executable = struct
     ; path              : string
     ; mode              : Mode.t
     }
-  [@@deriving bin_io, sexp]
+  [@@deriving bin_io, compare, sexp]
 end
 
 (** Common build info for libraries and executables *)
 module Buildable = struct
   module Dependency = struct
     module Context = struct
-      type t = Build | Runtime | Both [@@deriving bin_io, sexp]
+      type t = Build | Runtime | Both [@@deriving bin_io, compare, sexp]
     end
 
     module Global = struct
@@ -74,7 +74,7 @@ module Buildable = struct
         { opam_package      : string
         ; ocamlfind_package : string
         }
-      [@@deriving bin_io, sexp]
+      [@@deriving bin_io, compare, sexp]
 
       let of_ocamlfind_package s =
         { ocamlfind_package = s
@@ -98,14 +98,14 @@ module Buildable = struct
         { internal_name     : string
         ; ocamlfind_package : string option
         }
-      [@@deriving bin_io, sexp]
+      [@@deriving bin_io, compare, sexp]
     end
 
     module Kind = struct
       type t =
         | Local  of Local.t
         | Global of Global.t
-      [@@deriving bin_io, sexp]
+      [@@deriving bin_io, compare, sexp]
     end
 
     type t =
@@ -118,7 +118,7 @@ module Buildable = struct
           imported in our tree. We need to generate a wrapper at use sites. *)
       ; wrapper  : (string * string list) option [@default None]
       }
-    [@@deriving bin_io, sexp]
+    [@@deriving bin_io, compare, sexp]
   end
 
   type t =
@@ -129,7 +129,7 @@ module Buildable = struct
     ; js_ppxs               : Dependency.Global.t list [@default []]
     ; preprocessor_deps     : string list              [@default []]
     }
-  [@@deriving bin_io, sexp]
+  [@@deriving bin_io, compare, sexp]
 end
 
 module Package = struct
@@ -139,7 +139,7 @@ module Package = struct
       ; internal     : bool [@default false]
       ; context      : Buildable.Dependency.Context.t [@default Both]
       }
-    [@@deriving bin_io, sexp]
+    [@@deriving bin_io, compare, sexp]
   end
 
   module Install_item = struct
@@ -164,7 +164,7 @@ module Package = struct
     module Oasis_lib = struct
       type t =
         { tag : string }
-      [@@deriving bin_io, sexp]
+      [@@deriving bin_io, compare, sexp]
     end
 
     module Oasis_exe = struct
@@ -173,7 +173,7 @@ module Package = struct
         ; dst     : string sexp_option
         ; section : Section.t [@default Bin]
         }
-      [@@deriving bin_io, sexp]
+      [@@deriving bin_io, compare, sexp]
     end
 
     module File = struct
@@ -182,7 +182,7 @@ module Package = struct
         ; dst     : string sexp_option
         ; section : Section.t
         }
-      [@@deriving bin_io, sexp]
+      [@@deriving bin_io, compare, sexp]
     end
 
     module Tree = struct
@@ -191,7 +191,7 @@ module Package = struct
         ; dst     : string sexp_option
         ; section : Section.t
         }
-      [@@deriving bin_io, sexp]
+      [@@deriving bin_io, compare, sexp]
     end
 
     type t =
@@ -200,7 +200,7 @@ module Package = struct
       | Oasis_exe of Oasis_exe.t
       | File      of File.t
       | Tree      of Tree.t
-    [@@deriving bin_io, sexp]
+    [@@deriving bin_io, compare, sexp]
   end
 
   (** All filenames are relative to the repository root *)
@@ -220,5 +220,5 @@ module Package = struct
     (** Public version, of the form NNN.NN.NN. It is [None] for dev branches. *)
     ; stable_version      : string option
     }
-  [@@deriving bin_io, sexp]
+  [@@deriving bin_io, compare, sexp]
 end

@@ -42,7 +42,7 @@ module Make(Jenga_root : sig
 
     val public_release_files : Path.t
     val deep_unignored_subdirs : dir:Path.t -> Path.t list Dep.t
-    val libs_for_code_generated_by_pp : Libmap.t -> PP.t -> Lib_dep.t list
+    val libs_for_code_generated_by_pp : inside_base:bool -> Libmap.t -> PP.t -> Lib_dep.t list
     val ocaml_libraries : [< Jbuild.t ] -> Libdep_name.t list
     val pps_of_jbuild : DC.t -> [< Jbuild.t ] -> Lib_dep.t list
     val expand_pps : Unexpanded_pp.t list -> PP.t list * string list
@@ -93,7 +93,9 @@ end = struct
       | _ -> Invalid
     in
     fun word ->
-      if String.for_all word ~f:(fun ch -> char_status ch = Ok) then
+      if String.for_all word ~f:(fun ch ->
+        match char_status ch with Ok -> true | Invalid | Escape -> false
+      ) then
         word
       else
         String.concat_map word ~f:(fun ch ->
@@ -219,7 +221,7 @@ end = struct
       User_or_gen_config.load ~dir:lib.source_path *>>| fun jbuilds ->
       List.find_map_exn jbuilds
         ~f:(function
-          | `library ({ name; _ } as lib) when name = lib.name -> Some lib
+          | `library ({ name; _ } as lib) when LN.(=) name lib.name -> Some lib
           | _ -> None)
 
     let fail_at file ?(line=1) fmt =
@@ -386,8 +388,9 @@ end = struct
       (* If it is a ppx, find its runtime deps *)
       let rt_deps =
         match jbuild with
-        | `library { name; _ } -> libs_for_code_generated_by_pp (DC.libmap dc)
-                                    (PP.of_string (LN.to_string name))
+        | `library { name; _ } ->
+          libs_for_code_generated_by_pp ~inside_base:false (DC.libmap dc)
+            (PP.of_string (LN.to_string name))
         | `executables _ -> []
       in
 
@@ -435,6 +438,7 @@ end = struct
           in
           (has_ppx_jane,
            Standard_pp_sets.expand others
+           |> List.filter ~f:((<>) "ppx_js_style")
            |> List.map ~f:Libdep_name.of_string
            |> Libmap.resolve_libdep_names_exn (DC.libmap dc))
         | _ -> (false, [])
@@ -442,7 +446,7 @@ end = struct
       Dep.all (List.map other_ppxs ~f:(dependency D.Context.Build))
       *>>| fun ppxs ->
       let ppxs =
-        List.map ppxs ~f:(fun (ppx, virt_deps) -> assert (virt_deps = []); ppx)
+        List.map ppxs ~f:(fun (ppx, virt_deps) -> assert (List.is_empty virt_deps); ppx)
       in
       let js_ppxs =
         List.filter_map ppxs ~f:(fun dep ->
@@ -463,7 +467,7 @@ end = struct
         List.concat
           [ List.map extra_deps ~f:(fun { context; package } ->
               (context, D.Kind.Global package))
-          ; if List.exists preprocess ~f:(fun (k, _) -> k = `metaquot) then
+          ; if List.exists preprocess ~f:(fun (k, _) -> Pervasives.(=) k `metaquot) then
               [ (Build, ext_dep "ppx_tools.metaquot") ]
             else
               []
@@ -547,14 +551,13 @@ end = struct
       (if is_re2 then
          return false
        else
-         let deps_files = List.map c_names ~f:(fun s -> s ^ ".deps") in
-         Dep.all_unit (List.map deps_files ~f:(fun fn ->
-           Dep.path (Path.relative ~dir fn)))
-         *>>= fun () ->
          Dep.action_stdout
-           (return
-              (bashf ~dir "grep -Eq '^([.][.]/)*include/' -- %s || echo -n not-found"
-                 (List.map deps_files ~f:quote |> String.concat ~sep:" ")))
+           (let deps_files = List.map c_names ~f:(fun s -> s ^ ".deps") in
+            Dep.all_unit (List.map deps_files ~f:(fun fn ->
+              Dep.path (Path.relative ~dir fn)))
+            *>>| fun () ->
+            bashf ~dir "grep -Eq '^([.][.]/)*include/' -- %s || echo -n not-found"
+              (List.map deps_files ~f:quote |> String.concat ~sep:" "))
          *>>| function
          | "not-found" -> false
          | "" -> true
@@ -711,7 +714,7 @@ end = struct
         let buildables =
           List.map buildables ~f:(fun b -> (b.path, b))
           |> String.Map.of_alist_reduce ~f:(fun b1 b2 ->
-            if b1 = b2 then
+            if [%compare.equal: T.Buildable.t] b1 b2 then
               b1
             else
               failwiths
@@ -741,7 +744,7 @@ end = struct
               ; internal     = ppx.opam_package <> "js_of_ocaml" }))
         in
         let dependencies =
-          if List.for_all buildables ~f:(fun b -> b.js_ppxs = []) then
+          if List.for_all buildables ~f:(fun b -> List.is_empty b.js_ppxs) then
             dependencies
           else
             { opam_package = "ppx_driver"
@@ -765,9 +768,9 @@ end = struct
               type t = T.Package.Dependency.t [@@deriving sexp]
               let compare (a : t) (b : t) =
                 let d = String.compare a.opam_package b.opam_package in
-                if d = 0 then begin
-                  assert (a.internal = b.internal);
-                  assert (a.context  = b.context);
+                if Int.(=) d 0 then begin
+                  assert (Bool.(=) a.internal b.internal);
+                  assert ([%compare.equal: T.Buildable.Dependency.Context.t] a.context b.context);
                 end;
                 d
             end)

@@ -1,3 +1,6 @@
+open! Core.Std
+open! Import
+
 let cflags =
   if Compiler_selection.with_frame_pointers
   then ["-fno-omit-frame-pointer"]

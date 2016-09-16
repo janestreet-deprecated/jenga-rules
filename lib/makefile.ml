@@ -17,7 +17,7 @@ module F(X : sig val dir : Path.t end) = struct
   let makefile_basename = "Makefile.extracted-from-jenga"
 
   let keep path =
-    not (Path.basename path = makefile_basename) (* avoid sillyness *)
+    Path.basename path <> makefile_basename (* avoid sillyness *)
     && (
       Path.is_descendant ~dir path
       || Path.is_descendant ~dir:(Path.root_relative ".liblinks") path
@@ -50,7 +50,7 @@ module F(X : sig val dir : Path.t end) = struct
   end
 
   let wrap_relative_cd_from path s =
-    if dir = path then s else
+    if Path.(=) dir path then s else
       let relative_cd = Path.reach_from ~dir path in
       sprintf !"(mkdir -p %{quote}; cd %{quote}; %s)" relative_cd relative_cd s
 
@@ -139,7 +139,7 @@ start:\n\tcd \"$$(pwd -P)\" && $(MAKE) all # cd to physical path
       Rule.create ~targets:[makefile] (
         Reflect.putenv *>>= fun putenv ->
         Reflect.alias (Alias.default ~dir) *>>= fun roots ->
-        let roots = List.filter roots ~f:(fun r -> not (r = makefile)) in
+        let roots = List.filter roots ~f:(fun r -> Path.(<>) r makefile) in
         Reflect.reachable ~keep roots *>>| fun trips ->
         Action.save (format_makefile ~putenv ~roots trips) ~target:makefile
       );

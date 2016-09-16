@@ -272,7 +272,7 @@ let deps ~dir ~source ~flavor ~flags =
        to go over this max number? Well I think not, because when the file X changes,
        it's as if we're computing the dependendencies the first time and X is stale
        and we are making it up to date. *)
-    if i >= 50 then (
+    if Int.(>=) i 50 then (
       (* In case we encounter pathological cases *)
       failwiths "gcc -MM cannot seem to reach a fixpoint"
         (`On (sprintf !"%{Path}/%s" dir source), `Includes last_includes)

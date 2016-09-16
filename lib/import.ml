@@ -4,7 +4,7 @@ include (Jenga_lib.Api
            with module Var := Jenga_lib.Api.Var
            with module Path := Jenga_lib.Api.Path
            with module Action := Jenga_lib.Api.Action)
-open! Int.Replace_polymorphic_compare
+include String.Replace_polymorphic_compare
 
 module Var : sig
 

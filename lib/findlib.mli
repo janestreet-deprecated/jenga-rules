@@ -10,7 +10,7 @@ open! Import
 open! Ocaml_types
 
 (** List of packages known by findlib *)
-val packages : Findlib_package_name.Set.t Dep.t
+val packages : Path.t Findlib_package_name.Map.t Dep.t
 
 module Query : sig
   type 'a t

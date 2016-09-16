@@ -11,3 +11,4 @@ val odoc_minor_version : string
 val m32 : bool
 val flambda : bool
 val with_frame_pointers : bool
+val spacetime : bool

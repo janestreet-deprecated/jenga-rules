@@ -64,10 +64,13 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
                  ; List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir))
                  ])
             *>>| fun () ->
-            Action.process ~ignore_stderr:true ~dir odoc_path (
-              [ "compile"; "--pkg"; LN.to_string libname; "-o"; "."]
-              @ dash_Is ~dir (dir :: search_paths)
-              @ [Path.reach_from ~dir path]
+            (* We run the process from the parent directory as the file will be
+               written in a "pkg" subdirectory of the directory where odoc is
+               run from. *)
+            Action.process ~ignore_stderr:true ~dir:(Path.dirname dir) odoc_path (
+              [ "compile"; "--pkg"; LN.to_string libname ]
+              @ dash_Is ~dir:(Path.dirname dir) (dir :: search_paths)
+              @ [Path.reach_from ~dir:(Path.dirname dir) path]
             )
           )
         in

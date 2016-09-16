@@ -21,7 +21,7 @@ module Make(Hg : sig
   let fe_obligations_global = relative ~dir:(fe_dir ~repo:Path.the_root) "obligations-global.sexp"
 
   let rec safe_dir_exists ~dir =
-    if (dir = Path.the_root)
+    if Path.(=) dir Path.the_root
     then return true
     else
       safe_dir_exists ~dir:(dirname dir) *>>= function
@@ -219,7 +219,7 @@ module Make(Hg : sig
               || not (Path.is_descendant ~dir:Path.the_root x)
                 (* things under .hg are the same as files outside the tree. The only
                    such dependency we should have is on */.hg/dirstate* *)
-              || (Path.basename (Path.dirname x)) = ".hg"
+              || Path.basename (Path.dirname x) = ".hg"
               then `Fst (sprintf !"# not tracked %{Path}" x)
               else
                 (* This check is here to make sure we don't wrongly exclude dependencies.
@@ -296,7 +296,7 @@ module Make(Hg : sig
         let n = 5 in
         let first_paths = List.map (List.take paths n) ~f:Path.to_string in
         let first_paths =
-          if List.length paths > n then first_paths @ ["..."] else first_paths
+          if Int.(>) (List.length paths) n then first_paths @ ["..."] else first_paths
         in
         Some (on_error first_paths)
     ;;

@@ -5,7 +5,7 @@ open Jbuild_types
 
 type findlib_conf =
   { opam_root         : string sexp_option
-  ; opam_switch       : string [@default "system"]
+  ; opam_switch       : string sexp_option
   ; portable_makefile : bool [@default false]
   }
 [@@deriving of_sexp]
@@ -21,20 +21,28 @@ let use_findlib, portable_makefile =
   | None -> (false, false)
   | Some conf -> (true, conf.portable_makefile)
 
-let opam = Path.absolute "/j/office/app/opam/prod/bin/opam"
+let opam = Path.absolute Config.opam_prog
 let opam_bin_path = root_relative ".opam-bin"
 
 let opam_bin_rule =
   Rule.create ~targets:[opam_bin_path] (
     Dep.getenv findlib_conf
     *>>= function
-    | None | Some { opam_root = None; _ } ->
+    | None ->
       return (Action.save ~target:opam_bin_path "")
-    | Some { opam_root = Some opam_root; opam_switch; _ } ->
+    | Some { opam_root = opam_root; opam_switch; _ } ->
       Dep.path opam *>>| fun () ->
       let dir = Path.the_root in
+      let opam_root = match opam_root with
+        | None -> ""
+        | Some root -> sprintf !"--root %{quote}" root
+      in
+      let opam_switch = match opam_switch with
+        | None -> ""
+        | Some switch -> sprintf !"--switch %{quote}" switch
+      in
       bashf ~dir
-        !"%{quote} config var bin --root %{quote} --switch %{quote} > %{quote}"
+        !"%{quote} config var bin %s %s > %{quote}"
         (Path.reach_from ~dir opam) opam_root opam_switch (Path.basename opam_bin_path)
   )
 
@@ -66,8 +74,8 @@ let package_listing_rule =
     Dep.glob_change (Glob.create ~kinds:[`Directory] ~dir:destdir "*")
     *>>| fun () ->
     bashf ~dir:Path.the_root
-      !"%{quote} list | cut -d' ' -f1 > %{quote}"
-      ocamlfind (Path.basename package_listing_path)
+      !"%{quote} list | cut -d' ' -f1 | xargs %{quote} query -format '%%p %%d' > %{quote}"
+      ocamlfind ocamlfind (Path.basename package_listing_path)
   )
 
 let global_rules =
@@ -83,10 +91,13 @@ let packages =
     Dep.contents package_listing_path
     *>>| fun s ->
     String.split_lines s
-    |> List.map ~f:Findlib_package_name.of_string
-    |> Findlib_package_name.Set.of_list
+    |> List.map ~f:(fun line ->
+      let pkg, path = String.lsplit2_exn line ~on:' 'in
+      Findlib_package_name.of_string pkg, Path.absolute path
+    )
+    |> Findlib_package_name.Map.of_alist_exn
   else
-    return Findlib_package_name.Set.empty
+    return Findlib_package_name.Map.empty
 
 let default_predicates = ["mt"; "mt_posix"]
 

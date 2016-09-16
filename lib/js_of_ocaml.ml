@@ -22,28 +22,32 @@ let jsdeps_suf = ".jsdeps"
 *)
 let dot_js_dir = Path.root_relative ".js"
 let dot_js_dir_ocamlwhere = Path.relative ~dir:dot_js_dir "ocaml"
-
-let base = Path.relative ~dir:Path.the_root "external/js_of_ocaml"
-let compiler = Path.relative ~dir:base "compiler/js_of_ocaml"
-let runtime_file_path f = Path.relative ~dir:base ("runtime/" ^ f)
+let js_of_ocaml_compiler = Named_artifact.binary "js_of_ocaml"
+let js_of_ocaml_runtime fname =
+  Named_artifact.in_findlib ("js_of_ocaml:" ^ fname)
+let runtime_file_path artifacts f =
+  Named_artifact.path artifacts (js_of_ocaml_runtime f)
 
 let compiler_distribution_file f = Path.relative ~dir:dot_js_dir_ocamlwhere f
 
-let runtime_files =
-  List.map ~f:runtime_file_path
-    [
-      "runtime.js";
-      "bigstring.js";
-      "bin_prot.js";
-      "core_kernel.js";
-      "weak.js";
-      "nat.js";
-      "strftime.js"
-    ]
-
-let runtime_files_for_standalone_runtime =
-  runtime_file_path "predefined_exceptions.js"
-  :: runtime_files
+let runtime_files artifacts =
+  Dep.all (
+    List.map ~f:(runtime_file_path artifacts)
+      [
+        "runtime.js";
+        "bigstring.js";
+        "bin_prot.js";
+        "core_kernel.js";
+        "weak.js";
+        "nat.js";
+        "strftime.js"
+      ]
+  )
+let runtime_files_for_standalone_runtime artifacts =
+  Dep.both
+    (runtime_file_path artifacts "predefined_exceptions.js")
+    (runtime_files artifacts)
+  *>>| fun (a,b) -> a :: b
 
 let stdlib_from_compiler_distribution = compiler_distribution_file ("stdlib" ^ cma_suf)
 
@@ -89,7 +93,11 @@ let from_external_archives ~ocaml_where paths =
     Path.relative ~dir (base ^ ".js")
   )
 
-let setup_aux ~src ~dst =
+let setup_aux ~artifacts ~src ~dst =
+  Dep.both
+    (Named_artifact.path artifacts js_of_ocaml_compiler)
+    (runtime_files artifacts)
+  *>>= fun (compiler, runtime_files) ->
   Dep.glob_listing (Glob.create ~dir:src "*.{cma,cmo}")
   *>>| fun paths ->
   List.map paths ~f:(fun path ->
@@ -97,7 +105,7 @@ let setup_aux ~src ~dst =
     Rule.simple
       ~targets:[target]
       ~deps:[ Dep.path compiler
-            ; Dep.all_unit (List.map ~f:Dep.path runtime_files)
+            ; (Dep.all_unit (List.map runtime_files ~f:Dep.path))
             ; Dep.path path ]
       ~action:(Action.process ~dir:dst (reach_from ~dir:dst compiler)
                  (List.map runtime_files ~f:(reach_from ~dir:dst)
@@ -108,8 +116,8 @@ let setup_aux ~src ~dst =
                   ]))
   )
 
-let setup_dot_js_dir ~ocaml_where (dir : Path.t) : Scheme.t =
-  if dir = dot_js_dir then
+let setup_dot_js_dir ~artifacts ~ocaml_where (dir : Path.t) : Scheme.t =
+  if Path.(=) dir dot_js_dir then
     Scheme.empty
   else begin
     assert (Path.is_descendant ~dir:dot_js_dir dir);
@@ -117,7 +125,7 @@ let setup_dot_js_dir ~ocaml_where (dir : Path.t) : Scheme.t =
       (destdir_opt *>>| fun destdir_opt ->
        let mapping = mapping_in_to_out ~destdir_opt ~ocaml_where in
        match map_path mapping dir with
-       | Some src -> Scheme.rules_dep (setup_aux ~src ~dst:dir)
+       | Some src -> Scheme.rules_dep (setup_aux ~artifacts ~src ~dst:dir)
        | None -> Scheme.empty
       )
   end
@@ -136,14 +144,17 @@ let source_map_enabled = function
   | "--source-map" | "-source-map" -> true
   | _ -> false
 
-let rule_aux ~build_info ~hg_version ~dir ~flags ~target ~js_files rest_dep rest =
+let rule_aux ~artifacts ~build_info ~hg_version ~dir ~flags ~target ~js_files rest_dep rest =
   let targets =
     if List.exists flags ~f:source_map_enabled
     then [target; source_map_path target]
     else [target]
   in
   Rule.create ~targets
-    (js_files *>>= fun js_files ->
+    (Dep.both
+       (Named_artifact.path artifacts js_of_ocaml_compiler)
+       js_files
+     *>>= fun (compiler, js_files) ->
      Dep.all_unit
        [ Dep.path compiler
        ; Dep.all_unit (List.map ~f:Dep.path js_files)
@@ -175,21 +186,23 @@ let rule_aux ~build_info ~hg_version ~dir ~flags ~target ~js_files rest_dep rest
      Action.process ~dir (reach_from ~dir compiler) args
     )
 
-let rule ~build_info ~hg_version ~dir ~flags ~js_files ~src ~target =
+let rule ~artifacts ~build_info ~hg_version ~dir ~flags ~js_files ~src ~target =
   let rest_dep = Dep.path src in
   let rest = [ reach_from ~dir src ] in
   let js_files =
-    js_files *>>| fun files -> files @ runtime_files
+    Dep.both js_files (runtime_files artifacts)
+    *>>| fun (a,b) -> a @ b
   in
-  rule_aux ~build_info ~hg_version ~dir ~flags ~target ~js_files rest_dep rest
+  rule_aux ~artifacts ~build_info ~hg_version ~dir ~flags ~target ~js_files rest_dep rest
 
-let rule_for_standalone_runtime ~build_info ~hg_version ~dir ~flags ~js_files ~target =
+let rule_for_standalone_runtime ~artifacts ~build_info ~hg_version ~dir ~flags ~js_files ~target =
   let rest_dep = Dep.return () in
   let rest = [ "--runtime-only"; "dummy_source" ] in
   let js_files =
-    js_files *>>| fun files -> files @ runtime_files_for_standalone_runtime
+    Dep.both js_files (runtime_files_for_standalone_runtime artifacts)
+    *>>| fun (a,b) -> a @ b
   in
-  rule_aux ~build_info ~hg_version ~dir ~flags ~target ~js_files rest_dep rest
+  rule_aux ~artifacts ~build_info ~hg_version ~dir ~flags ~target ~js_files  rest_dep rest
 
 let link_js_files ~dir ~files ~target =
   Dep.all_unit (List.map ~f:Dep.path files) *>>| fun () ->

@@ -1,4 +1,5 @@
 open! Core.Std
+open! Import
 
 module type S = sig
   val cmx        : string

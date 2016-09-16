@@ -12,7 +12,10 @@ let config =
   |> String.Map.of_alist_exn
 
 let get_conf key = Map.find_exn config key
-let get_bool key = get_conf key = "true"
+let get_bool key = match Map.find config key with
+  | Some "true"   -> true
+  | Some _ | None -> false
+
 
 let major_version = get_conf "version"
 
@@ -22,6 +25,7 @@ let compiler_dir = Filename.dirname compiler_bin_dir
 
 let flambda = get_bool "flambda"
 let with_frame_pointers = get_bool "with_frame_pointers"
+let spacetime = get_bool "spacetime"
 
 let m32 = List.mem ["i386"] (get_conf "architecture")
 

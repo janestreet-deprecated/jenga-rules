@@ -14,7 +14,8 @@ val jsdeps_suf : string
 
     [options] are given to js_of_ocaml compiler (ie: --pretty) *)
 val rule
-   : build_info:Path.t option
+   : artifacts:Named_artifact.Store.t
+  -> build_info:Path.t option
   -> hg_version:Path.t option
   -> dir:Path.t
   -> flags:string list
@@ -24,7 +25,8 @@ val rule
   -> Rule.t
 
 val rule_for_standalone_runtime
-   : build_info:Path.t option
+  :  artifacts:Named_artifact.Store.t
+  -> build_info:Path.t option
   -> hg_version:Path.t option
   -> dir:Path.t
   -> flags:string list
@@ -45,4 +47,8 @@ val from_compiler_distribution : Ocaml_types.From_compiler_distribution.t -> Pat
 val stdlib_from_compiler_distribution : Path.t
 
 val dot_js_dir : Path.t
-val setup_dot_js_dir : ocaml_where:Path.t -> Path.t -> Jenga_lib.Api.Scheme.t
+val setup_dot_js_dir
+  :  artifacts:Named_artifact.Store.t
+  -> ocaml_where:Path.t
+  -> Path.t
+  -> Jenga_lib.Api.Scheme.t

@@ -15,38 +15,30 @@ let script_dir =
          | None -> Sys.getcwd ()
          | Some path -> path ^/ "scripts"))
 
+let public = true
+
 let command_lookup_path = `Extend
 
 let findlib_conf_default = Some "()"
 
-let path_sep = if Sys.os_type = "Win32" then ';' else ':'
-
-let split_path str =
-  let len = String.length str in
-  let rec aux i =
-    if i >= len then
-      []
-    else
-      let j = Option.value (String.index_from str i path_sep) ~default:len in
-      String.sub str i (j - i) :: aux (j + 1)
-  in
-  aux 0
-
 let path =
+  let path_sep = if Sys.os_type = "Win32" then ';' else ':' in
   match Sys.getenv "PATH" with
   | None -> []
-  | Some s -> split_path s
+  | Some s -> String.split s ~on:path_sep
 
 let find_prog name =
   List.find_map path ~f:(fun dir ->
     let fn = dir ^/ name in
-    if Sys.file_exists fn = `Yes then
-      Some fn
-    else
-      None)
+    match Sys.file_exists fn with
+    | `Yes -> Some fn
+    | `No | `Unknown -> None)
   |> Option.value ~default:name
 
 let hg_prog = find_prog "hg"
 let git_prog = find_prog "git"
+let nodejs_prog = find_prog "node"
+let emacs_prog = find_prog "emacs"
+let opam_prog = find_prog "opam"
 
-let extra_jane_kernel_ppx = []
+let extra_base_ppx = []
