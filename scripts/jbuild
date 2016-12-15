@@ -1,0 +1,11 @@
+(install
+ ((section libexec)
+  (files (
+    (build_info.sh as scripts/build_info.sh)
+    (cpp_quietly/cpp as scripts/cpp_quietly/cpp)
+    (deterministic-ranlib/ar as scripts/deterministic-ranlib/ar)
+    (deterministic-ranlib/ranlib as scripts/deterministic-ranlib/ranlib)
+    (generate_static_string_c_code.sh as scripts/generate_static_string_c_code.sh)
+    (link-quietly as scripts/link-quietly)
+    (time_limit as scripts/time_limit)
+   ))))
