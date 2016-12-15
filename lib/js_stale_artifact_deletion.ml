@@ -40,7 +40,6 @@ let delete_if_depended_upon =
       Re.execp re path
   in
   fun ~non_target:path ->
-    Path.is_descendant ~dir:Path.the_root path &&
     let path = Path.to_string path in
     match path with
     | "jenga/start/jbuild" ->

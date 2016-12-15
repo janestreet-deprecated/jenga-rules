@@ -4,8 +4,15 @@ open Import
 let exe_suf = ".bc.js"
 let cma_suf = ".cma.js"
 let cmo_suf = ".cmo.js"
+let sourcemap_suf = ".map"
 let runtime_suf = ".runtime.js"
 let jsdeps_suf = ".jsdeps"
+
+let with_sourcemap_suf s =
+  match String.chop_suffix ~suffix:".js" s with
+  | None -> failwithf "Js_of_ocaml.with_sourcemap_suf: invalid extension" ()
+  | Some prefix ->
+    prefix ^ sourcemap_suf
 
 (* Some libraries outside the tree might need to be compiled to javascript
    to support separate compilation. We store theses compiled javascript in
@@ -23,6 +30,7 @@ let jsdeps_suf = ".jsdeps"
 let dot_js_dir = Path.root_relative ".js"
 let dot_js_dir_ocamlwhere = Path.relative ~dir:dot_js_dir "ocaml"
 let js_of_ocaml_compiler = Named_artifact.binary "js_of_ocaml"
+let js_of_ocaml_linker = Named_artifact.binary "jsoo_link"
 let js_of_ocaml_runtime fname =
   Named_artifact.in_findlib ("js_of_ocaml:" ^ fname)
 let runtime_file_path artifacts f =
@@ -35,12 +43,7 @@ let runtime_files artifacts =
     List.map ~f:(runtime_file_path artifacts)
       [
         "runtime.js";
-        "bigstring.js";
-        "bin_prot.js";
-        "core_kernel.js";
         "weak.js";
-        "nat.js";
-        "strftime.js"
       ]
   )
 let runtime_files_for_standalone_runtime artifacts =
@@ -48,6 +51,12 @@ let runtime_files_for_standalone_runtime artifacts =
     (runtime_file_path artifacts "predefined_exceptions.js")
     (runtime_files artifacts)
   *>>| fun (a,b) -> a :: b
+
+let runtime_files_for_lib_in_compiler_distribution ~artifacts t =
+  match Ocaml_types.From_compiler_distribution.to_string t with
+  | "graphics" -> [runtime_file_path artifacts "graphics.js"]
+  | "nums"     -> [runtime_file_path artifacts "nat.js"]
+  | _          -> []
 
 let stdlib_from_compiler_distribution = compiler_distribution_file ("stdlib" ^ cma_suf)
 
@@ -93,68 +102,60 @@ let from_external_archives ~ocaml_where paths =
     Path.relative ~dir (base ^ ".js")
   )
 
-let setup_aux ~artifacts ~src ~dst =
-  Dep.both
-    (Named_artifact.path artifacts js_of_ocaml_compiler)
-    (runtime_files artifacts)
-  *>>= fun (compiler, runtime_files) ->
-  Dep.glob_listing (Glob.create ~dir:src "*.{cma,cmo}")
-  *>>| fun paths ->
-  List.map paths ~f:(fun path ->
-    let target = Path.relative ~dir:dst (Path.basename path ^ ".js") in
-    Rule.simple
-      ~targets:[target]
-      ~deps:[ Dep.path compiler
-            ; (Dep.all_unit (List.map runtime_files ~f:Dep.path))
-            ; Dep.path path ]
-      ~action:(Action.process ~dir:dst (reach_from ~dir:dst compiler)
-                 (List.map runtime_files ~f:(reach_from ~dir:dst)
-                  @
-                  [ reach_from ~dir:dst path
-                  ; "--no-runtime"
-                  ; "-o"; reach_from ~dir:dst target
-                  ]))
-  )
+let source_map_path p =
+  Path.relative ~dir:(Path.dirname p) (with_sourcemap_suf (Path.basename p))
 
-let setup_dot_js_dir ~artifacts ~ocaml_where (dir : Path.t) : Scheme.t =
-  if Path.(=) dir dot_js_dir then
-    Scheme.empty
-  else begin
-    assert (Path.is_descendant ~dir:dot_js_dir dir);
-    Scheme.dep
-      (destdir_opt *>>| fun destdir_opt ->
-       let mapping = mapping_in_to_out ~destdir_opt ~ocaml_where in
-       match map_path mapping dir with
-       | Some src -> Scheme.rules_dep (setup_aux ~artifacts ~src ~dst:dir)
-       | None -> Scheme.empty
-      )
-  end
-
-let source_map_path =
-  let chop_extension s =
-    try Filename.chop_extension s with Invalid_argument _ -> s
-  in
-  fun p ->
-    let dir = Path.dirname p in
-    let base = chop_extension (Path.basename p) in
-    Path.relative ~dir (base ^ ".map")
-
-let source_map_enabled = function
+let has_separate_sourcemap_file = function
   | "--sourcemap"  | "-sourcemap"
   | "--source-map" | "-source-map" -> true
   | _ -> false
 
-let rule_aux ~artifacts ~build_info ~hg_version ~dir ~flags ~target ~js_files rest_dep rest =
+let exists_in_list ~pattern =
+  let rec loop l =
+    if List.is_prefix ~prefix:pattern ~equal:String.equal l
+    then true
+    else match l with
+      | [] -> false
+      | _ :: xs -> loop xs
+  in
+  loop
+
+let sourcemap_flag ~sourcemap = if sourcemap then ["--source-map-inline"] else []
+
+let normalize_flags ~sourcemap devel flags =
+  let extra =
+    if devel
+    then
+      [ ["--enable";"with-js-error"]
+      ; ["--pretty"]
+      ; sourcemap_flag ~sourcemap
+      ]
+    else
+      [ ["--enable";"with-js-error"]
+      ]
+  in
+  let extra = List.map extra ~f:(fun l ->
+    if exists_in_list ~pattern:l flags
+    then []
+    else l
+  )
+  in
+  List.concat (flags :: extra)
+
+let rule_aux ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~findlib_flags ~target ~js_files rest_dep rest =
+  let flags = normalize_flags ~sourcemap devel flags in
   let targets =
-    if List.exists flags ~f:source_map_enabled
+    if List.exists flags ~f:has_separate_sourcemap_file
     then [target; source_map_path target]
     else [target]
   in
   Rule.create ~targets
     (Dep.both
-       (Named_artifact.path artifacts js_of_ocaml_compiler)
-       js_files
-     *>>= fun (compiler, js_files) ->
+       (Dep.both
+          (Named_artifact.path artifacts js_of_ocaml_compiler)
+          js_files)
+       findlib_flags
+     *>>= fun ((compiler, js_files), findlib_flags) ->
      Dep.all_unit
        [ Dep.path compiler
        ; Dep.all_unit (List.map ~f:Dep.path js_files)
@@ -181,31 +182,100 @@ let rule_aux ~artifacts ~build_info ~hg_version ~dir ~flags ~target ~js_files re
      let args =
        flags
        @ List.map ~f:(fun x -> reach_from ~dir x) js_files
+       @ findlib_flags
        @ rest
      in
      Action.process ~dir (reach_from ~dir compiler) args
     )
 
-let rule ~artifacts ~build_info ~hg_version ~dir ~flags ~js_files ~src ~target =
+let rule ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~findlib_flags ~js_files ~src ~target =
   let rest_dep = Dep.path src in
   let rest = [ reach_from ~dir src ] in
   let js_files =
     Dep.both js_files (runtime_files artifacts)
     *>>| fun (a,b) -> a @ b
   in
-  rule_aux ~artifacts ~build_info ~hg_version ~dir ~flags ~target ~js_files rest_dep rest
+  rule_aux ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~findlib_flags ~target ~js_files rest_dep rest
 
-let rule_for_standalone_runtime ~artifacts ~build_info ~hg_version ~dir ~flags ~js_files ~target =
+let rule_for_standalone_runtime ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~findlib_flags ~js_files ~target =
   let rest_dep = Dep.return () in
   let rest = [ "--runtime-only"; "dummy_source" ] in
   let js_files =
-    Dep.both js_files (runtime_files_for_standalone_runtime artifacts)
+    Dep.both (runtime_files_for_standalone_runtime artifacts) js_files
     *>>| fun (a,b) -> a @ b
   in
-  rule_aux ~artifacts ~build_info ~hg_version ~dir ~flags ~target ~js_files  rest_dep rest
+  rule_aux ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~findlib_flags ~target ~js_files  rest_dep rest
 
-let link_js_files ~dir ~files ~target =
-  Dep.all_unit (List.map ~f:Dep.path files) *>>| fun () ->
-  bashf ~dir !"for f in %{concat_quoted}; do cat -- \"${f}\"; echo; done > %{quote}"
+let setup_aux ~artifacts ~sourcemap ~devel ~src ~dst =
+  let flags = [] in
+  let findlib_flags = Dep.return [] in
+  let js_files = runtime_files artifacts in
+  Dep.glob_listing (Glob.create ~dir:src "*.{cma,cmo}")
+  *>>| fun paths ->
+  List.map paths ~f:(fun path ->
+    let rest_dep = Dep.path path in
+    let rest = [ reach_from ~dir:dst path ] in
+    let target = Path.relative ~dir:dst (Path.basename path ^ ".js") in
+    rule_aux ~artifacts ~sourcemap ~devel ~build_info:None ~hg_version:None ~dir:dst ~flags ~findlib_flags ~target ~js_files  rest_dep rest
+  )
+
+let setup_dot_js_dir ~artifacts ~sourcemap ~devel ~ocaml_where (dir : Path.t) : Scheme.t =
+  if Path.(=) dir dot_js_dir then
+    Scheme.empty
+  else begin
+    assert (Path.is_descendant ~dir:dot_js_dir dir);
+    Scheme.dep
+      (destdir_opt *>>| fun destdir_opt ->
+       let mapping = mapping_in_to_out ~destdir_opt ~ocaml_where in
+       match map_path mapping dir with
+       | Some src -> Scheme.rules_dep (setup_aux ~artifacts ~sourcemap ~devel ~src ~dst:dir)
+       | None -> Scheme.empty
+      )
+  end
+
+let link_js_files ~artifacts ~sourcemap ~dir ~files ~target =
+  let flags = sourcemap_flag ~sourcemap in
+  Named_artifact.path artifacts js_of_ocaml_linker *>>= fun linker ->
+  Dep.all_unit (List.map ~f:Dep.path (linker :: files)) *>>| fun () ->
+  bashf ~dir !"%{quote} %{concat_quoted} -o %{quote} %{concat_quoted}"
+    (reach_from ~dir linker)
     (List.map files ~f:(reach_from ~dir))
     (reach_from ~dir target)
+    flags
+
+
+let gen_html_for_inline_tests ~libname ~argv ~drop_test ~exe =
+  let make_script ?src content =
+    let src = match src with
+      | None -> ""
+      | Some src -> sprintf "src='%s'" src
+    in
+    sprintf "<script type='text/javascript' %s> %s </script>" src content
+  in
+  let run =
+    if drop_test
+    then make_script "console.log('Tests have been disabled');"
+    else
+      let argv =
+        let all = "dummy" :: argv in
+        String.concat ~sep:", " (List.map ~f:(sprintf "'%s'") all)
+      in
+      (* We [export TZ] so that tests do not depend on the local timezone. *)
+      String.concat ~sep:"\n"
+        [ make_script
+            (sprintf "var process = { argv : [%s],
+                                      env  : {'TZ':'America/New_York'},
+                                      exit : (function (code){ throw ('exit with code ' + code)}) };" argv);
+          make_script ~src:exe ""
+        ]
+  in
+  (sprintf "<!DOCTYPE html>
+     <html>
+       <head>
+         <meta charset='UTF-8'>
+         <title>inline_tests_runner for %s </title>
+       </head>
+       <body>
+       </body>
+       %s
+     </html>" (Ocaml_types.Libname.to_string libname) run)

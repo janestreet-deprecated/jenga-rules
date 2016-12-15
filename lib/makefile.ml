@@ -1,10 +1,6 @@
 open Core.Std
 open Import
 
-let ( *>>= ) = Dep.bind
-let ( *>>| ) = Dep.map
-let relative = Path.relative
-
 module Alias = struct
   include Alias
   let default ~dir = Alias.create ~dir "DEFAULT"

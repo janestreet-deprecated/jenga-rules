@@ -6,6 +6,14 @@ val compiler_bin_dir : string
 val compiler_stdlib_dir : string
 val compiler_dir : string
 
+(** This is written into .ocaml-major-version (which is commited) at the root of
+    the tree.
+    As this gets bumped when we switch to a new version of the compiler we can
+    use it to make a "best guess" regarding which version of merlin to use
+    when the .omake-ocaml-bin file is not present (i.e. when the tree hasn't
+    been compiled yet). *)
+val vanilla_major_version : string
+
 val odoc_minor_version : string
 
 val m32 : bool

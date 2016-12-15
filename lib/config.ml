@@ -29,10 +29,13 @@ let path =
 
 let find_prog name =
   List.find_map path ~f:(fun dir ->
-    let fn = dir ^/ name in
-    match Sys.file_exists fn with
-    | `Yes -> Some fn
-    | `No | `Unknown -> None)
+    if String.is_empty dir
+    then None
+    else
+      let fn = dir ^/ name in
+      match Sys.file_exists fn with
+      | `Yes -> Some fn
+      | `No | `Unknown -> None)
   |> Option.value ~default:name
 
 let hg_prog = find_prog "hg"
@@ -41,4 +44,4 @@ let nodejs_prog = find_prog "node"
 let emacs_prog = find_prog "emacs"
 let opam_prog = find_prog "opam"
 
-let extra_base_ppx = []
+let extra_jane_kernel_ppx = []

@@ -27,8 +27,10 @@ let flambda = get_bool "flambda"
 let with_frame_pointers = get_bool "with_frame_pointers"
 let spacetime = get_bool "spacetime"
 
-let m32 = List.mem ["i386"] (get_conf "architecture")
+let m32 = List.mem ["i386"] (get_conf "architecture") ~equal:String.equal
 
 let pa_macro_flags = []
 
 let odoc_minor_version = ""
+
+let vanilla_major_version = major_version

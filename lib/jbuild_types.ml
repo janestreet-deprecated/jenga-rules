@@ -1,15 +1,133 @@
 open Core.Std
 open! Import
 
-module Unexpanded_string () : sig
-  type t = private string [@@deriving of_sexp]
-  val to_string : t -> string
-  val of_string : string -> t
-end = String
+module PP : sig
+  include Identifiable.S
+  val remove_dups_and_sort : t list -> t list
+  val to_libdep_name : t -> Ocaml_types.Libdep_name.t
+  val jane : t
+end = struct
+  include String
+  let remove_dups_and_sort = remove_dups_and_sort
+  let to_libdep_name t = Ocaml_types.Libdep_name.of_string t
 
-module Unexpanded_command = Unexpanded_string ()
+  let of_string s =
+    assert (not (String.is_prefix s ~prefix:"-"));
+    let s =
+      match s with
+      | "BASE" -> "ppx_base"
+      | "JANE" -> "ppx_jane"
+      | "JANE_KERNEL" -> "ppx_jane_kernel"
+      | _ -> s
+    in
+    of_string s
 
-module Unexpanded_pp = Unexpanded_string ()
+  let t_of_sexp sexp =
+    let s = string_of_sexp sexp in
+    if String.is_prefix s ~prefix:"-" then
+      of_sexp_error "flag not allowed here" sexp;
+    of_string s
+
+  let jane = "ppx_jane"
+end
+
+module Pp_or_flag = struct
+  type t =
+    | PP   of PP.t
+    | Flag of string
+
+  let of_string s =
+    if String.is_prefix s ~prefix:"-" then
+      Flag s
+    else
+      PP (PP.of_string s)
+
+  let t_of_sexp sexp = of_string (string_of_sexp sexp)
+
+  let split l =
+    List.partition_map l ~f:(function
+      | PP pp  -> `Fst pp
+      | Flag s -> `Snd s)
+end
+
+module User_action = struct
+  module Mini_shexp = struct
+    module Syntax = struct
+      type 'a t =
+        | Run    of 'a sexp_list
+        | Chdir  of 'a * 'a t
+        | Setenv of 'a * 'a * 'a t
+      [@@deriving of_sexp]
+    end
+    type 'a t =
+      | Run    of 'a * 'a list
+      | Chdir  of 'a * 'a t
+      | Setenv of 'a * 'a * 'a t
+
+    let rec of_syntax (syntax : _ Syntax.t) sexp =
+      match syntax with
+      | Run [] -> of_sexp_error "run constructor needs at least one element" sexp
+      | Run (prog :: args) -> Run (prog, args)
+      | Chdir (a, b) -> Chdir (a, of_syntax b sexp)
+      | Setenv (a, b, c) -> Setenv (a, b, of_syntax c sexp)
+
+    let t_of_sexp a_of_sexp sexp =
+      of_syntax (Syntax.t_of_sexp a_of_sexp sexp) sexp
+
+    let rec map t ~f =
+      match t with
+      | Run (prog, args) -> Run (f prog, List.map args ~f)
+      | Chdir (fn, t) -> Chdir (f fn, map t ~f)
+      | Setenv (var, value, t) -> Setenv (f var, f value, map t ~f)
+
+    let rec fold t ~init:acc ~f =
+      match t with
+      | Run (prog, args) -> List.fold_left args ~init:(f acc prog) ~f
+      | Chdir (fn, t) -> fold t ~init:(f acc fn) ~f
+      | Setenv (var, value, t) -> fold t ~init:(f (f acc var) value) ~f
+
+    let to_action ~dir (t : string t) =
+      let rec loop env dir = function
+        | Chdir (fn, t) ->
+          loop env (Path.relative ~dir fn) t
+        | Setenv (var, value, t) ->
+          loop ((var, value) :: env) dir t
+        | Run (prog, args) ->
+          Action.process ~env ~dir prog args
+      in
+      loop [] dir t
+  end
+
+  module T = struct
+    type 'a t =
+      | Bash of 'a
+      | Shexp of 'a Mini_shexp.t
+
+    let t_of_sexp a_of_sexp (sexp : Sexp.t) =
+      match sexp with
+      | Atom _ -> Bash  ([%of_sexp: a             ] sexp)
+      | List _ -> Shexp ([%of_sexp: a Mini_shexp.t] sexp)
+
+    let map t ~f =
+      match t with
+      | Bash x -> Bash (f x)
+      | Shexp x -> Shexp (Mini_shexp.map x ~f)
+
+    let fold t ~init ~f =
+      match t with
+      | Bash x -> f init x
+      | Shexp x -> Mini_shexp.fold x ~init ~f
+  end
+
+  include T
+
+  module Unexpanded = String_with_vars.Lift(T)
+
+  let to_action ~dir (t : string t) =
+    match t with
+    | Bash cmd -> bash ~dir cmd
+    | Shexp shexp -> Mini_shexp.to_action ~dir shexp
+end
 
 module Names_spec = struct
   type old =
@@ -21,16 +139,24 @@ module Names_spec = struct
   let t_of_sexp sexp =
     match old_of_sexp sexp with
     | exception _ -> Ordered_set_lang.t_of_sexp sexp
-    | All -> Ordered_set_lang.standard
-    | List l -> Ordered_set_lang.t_of_sexp ([%sexp_of: string list] l)
+    | All ->
+          of_sexp_error "\
+This is using the old syntax for name set specifications.
+Replace by (:standard) or the whole preprocess field by (preprocess <kind>)"
+            sexp
+    | List _ ->
+          of_sexp_error "\
+This is using the old syntax for name set specifications.
+Replace (list (<names>)) by (<names>)."
+            sexp
 end
 
 module Preprocess_kind = struct
   type t = [
   | `no_preprocessing
-  | `command            of Unexpanded_command.t
+  | `command            of String_with_vars.t
   | `metaquot
-  | `pps                of Unexpanded_pp.t list
+  | `pps                of Pp_or_flag.t list
   ]
   [@@deriving of_sexp]
 end
@@ -40,10 +166,38 @@ module Preprocess_spec = struct
   [@@deriving of_sexp]
 end
 
-let unexpanded_pps_default = [(Unexpanded_pp.of_string "JANE")]
+module Preprocess_specs = struct
+  type t = Preprocess_spec.t list
+
+  let t_of_sexp (sexp : Sexp.t) =
+    match sexp with
+    | List (Atom "per_file" :: l) -> List.map l ~f:Preprocess_spec.t_of_sexp
+    | sexp ->
+      match Preprocess_kind.t_of_sexp sexp with
+      | kind -> [(kind, Ordered_set_lang.standard)]
+      | exception exn ->
+        match [%of_sexp: Preprocess_spec.t list] sexp with
+        | exception _ -> raise exn
+        | _ ->
+          of_sexp_error "\
+This is using the old syntax for (preprocess ...).
+If you have multiple subsets in your 'preprocess' field, write:
+
+  (preprocess (per_file (<kind1> <names-spec>) (<kind2> <names-spec>) ...))
+
+Otherwise simply write (preprocess <kind>) which means to use <kind> for all modules."
+            sexp
+end
+
+let pps_default = [PP.jane]
 let preprocess_default = [
-  (`pps unexpanded_pps_default, Ordered_set_lang.standard)
+  (`pps (List.map pps_default ~f:(fun pp -> Pp_or_flag.PP pp)),
+   Ordered_set_lang.standard)
 ]
+
+module Lint_spec = struct
+  type t = [ `pps of Pp_or_flag.t list ] [@@deriving of_sexp]
+end
 
 module Artifact_name = Ocaml_types.Artifact_name
 module Libname = Ocaml_types.Libname
@@ -62,19 +216,19 @@ module Preprocessor_conf = struct
     name : Libname.t;
     libraries : Libdep_name.t sexp_list;
     extra_disabled_warnings : int sexp_list;
-    preprocess : Preprocess_spec.t list [@default preprocess_default];
+    preprocess : Preprocess_specs.t [@default preprocess_default];
   } [@@deriving of_sexp, fields]
 end
 
 module Dep_conf = struct
   type t =
-    | File of string
-    | Alias of string
-    | Glob_files of string
-    | Files_recursively_in of string
+    | File of String_with_vars.t
+    | Alias of String_with_vars.t
+    | Glob_files of String_with_vars.t
+    | Files_recursively_in of String_with_vars.t
   [@@deriving of_sexp]
   let t_of_sexp = function
-    | Sexp.Atom s -> File s
+    | Sexp.Atom s -> File (String_with_vars.of_string s)
     | Sexp.List _ as sexp -> t_of_sexp sexp
 end
 
@@ -85,6 +239,17 @@ module Inline_tests = struct
     | `build_but_dont_run
     | `build_and_run
     ] [@@deriving of_sexp]
+
+  let should_run ~default : build_and_run option -> _ = function
+    | Some `build_and_run -> true
+    | Some (`dont_build_dont_run | `build_but_dont_run) -> false
+    | None -> default
+
+  let should_build ~default : build_and_run option -> _ = function
+    | Some (`build_but_dont_run | `build_and_run) -> true
+    | Some `dont_build_dont_run -> false
+    | None -> default
+
   type t = {
     (** The dependencies of running the inline tests *)
     deps : Dep_conf.t sexp_list;
@@ -93,29 +258,48 @@ module Inline_tests = struct
     (** The alias that runs the tests runners in *)
     alias : string sexp_option;
     (** Should inline_tests_runner be built and run in native environment *)
-    native     : build_and_run [@default `build_and_run];
+    native     : build_and_run sexp_option;
     (** Should inline_tests_runner be built and run in javascript environment *)
-    javascript : build_and_run [@default `dont_build_dont_run];
+    javascript : build_and_run sexp_option;
     (** Should inline_tests_runner be built as a .exe or as a .so? *)
     only_shared_object : bool [@default false];
   }
   [@@deriving of_sexp]
 
-  let will_run_tests : build_and_run -> bool = function
-    | `dont_build_dont_run
-    | `build_but_dont_run -> false
-    | `build_and_run -> true
+  type what_tests_to_build_or_run =
+    { build_native     : bool
+    ; run_native       : bool
+    ; build_javascript : bool
+    ; run_javascript   : bool
+    }
 
-  let t_of_sexp sexp =
-    let t = t_of_sexp sexp in
-    let will_run_tests = will_run_tests t.native || will_run_tests t.javascript in
-    if not will_run_tests then begin
-      let fail msg = Sexplib.Conv.of_sexp_error msg sexp in
+  let what_tests_to_build_or_run t ~has_js_of_ocaml ~javascript_enabled =
+    { build_native = should_build ~default:true t.native
+    ; run_native   = should_run   ~default:true t.native
+    ; build_javascript =
+      javascript_enabled && should_build ~default:has_js_of_ocaml t.javascript
+    ; run_javascript =
+      javascript_enabled && should_run   ~default:has_js_of_ocaml t.javascript
+    }
+
+  let validate t ~sexp ~has_js_of_ocaml =
+    let w = what_tests_to_build_or_run t ~has_js_of_ocaml ~javascript_enabled:true in
+    let fail msg = Sexplib.Conv.of_sexp_error msg sexp in
+    if not w.run_native && not w.run_javascript then begin
       if not (List.is_empty t.deps)
       then fail "inline tests deps only apply to the default way of running tests";
       if not (Option.is_none t.alias)
       then fail "inline tests alias only applies to the default way of running tests";
     end;
+    if (w.run_javascript || w.build_javascript) && not has_js_of_ocaml then begin
+      fail "cannot enable javascript tests because the library is not supported in \
+            javascript (the js_of_ocaml field is missing)"
+    end;
+  ;;
+
+  let t_of_sexp sexp =
+    let t = t_of_sexp sexp in
+    validate t ~sexp ~has_js_of_ocaml:true; (* conservative check, for better error *)
     t
   ;;
 
@@ -123,8 +307,8 @@ module Inline_tests = struct
     deps = [];
     flags = [];
     alias = None;
-    native = `build_and_run;
-    javascript = `dont_build_dont_run;
+    native = None;
+    javascript = None;
     only_shared_object = false;
   }
 end
@@ -133,7 +317,7 @@ module Rule_conf = struct
   type t = {
     targets : string list;
     deps : Dep_conf.t list;
-    action : Unexpanded_command.t;
+    action : User_action.Unexpanded.t;
   } [@@deriving of_sexp, fields]
 end
 
@@ -141,14 +325,14 @@ module Alias_conf = struct
   type t = {
     name : string;
     deps : Dep_conf.t list;
-    action : Unexpanded_command.t sexp_option;
+    action : User_action.Unexpanded.t sexp_option;
   } [@@deriving of_sexp, fields]
 end
 
 module Compile_c_conf = struct
   type t = {
     names : string list;
-    c_flags : Ordered_set_lang.t sexp_option;
+    c_flags : Ordered_set_lang.Unexpanded.t sexp_option;
     includes : string sexp_list;
   } [@@deriving of_sexp]
 end
@@ -159,60 +343,36 @@ module Embed_conf = struct
     names : string list;
     libraries : Libdep_name.t sexp_list;
     cmis : string sexp_list;
-    pps : Unexpanded_pp.t list [@default unexpanded_pps_default];
+    pps : PP.t list [@default pps_default];
     code_style : style [@default Ppx];
   } [@@deriving of_sexp]
 end
 
 module Library_conf = struct
-  module Public_release = struct
-    module T = Public_release_types
-
-    type bool_option = True | False | Default [@@deriving of_sexp]
-
-    type extra_dep =
-      { context : T.Buildable.Dependency.Context.t
-      ; package : T.Buildable.Dependency.Global.t
-      }
-    [@@deriving of_sexp]
-
-    let extra_dep_of_sexp (sexp : Sexp.t) =
-      match sexp with
-      | Atom _ ->
-        { context = Both
-        ; package = T.Buildable.Dependency.Global.t_of_sexp sexp }
-      | _ -> extra_dep_of_sexp sexp
-
-    (* Information for the public release *)
-    type internal_package =
-      { desc       : string sexp_option
-      (* This is only needed because threads and co are hardcoded in jenga/root.ml *)
-      ; extra_deps : extra_dep list  [@default []]
-      (* Dependencies that only exist at the package level *)
-      ; extra_opam_deps : T.Package.Dependency.t list [@default []]
-      ; kind       : T.Library.Kind.t     [@default Normal]
-      ; libraries  : Ordered_set_lang.t sexp_option;
-      }
-    [@@deriving of_sexp]
-
-    type external_package =
-      { opam_package      : string sexp_option
-      ; virtual_opam_deps : string list [@default []]
-      ; wrapped           : bool_option [@default Default]
-      }
-    [@@deriving of_sexp]
-
+  module External = struct
+    (* Description of external libraries imported into Jane *)
     type t =
-      | Internal of internal_package
-      | External of external_package
-    [@@deriving of_sexp]
+      { (* [true] if we are repackaging the library internally. i.e. if externally the
+           library exports several toplevel modules and internally we are repackaging it
+           under a single module.
 
-    let t_of_sexp (sexp : Sexp.t) =
-      match sexp with
-      | List (Atom ("external" | "External") :: _) -> t_of_sexp sexp
-      | _ -> Internal (internal_package_of_sexp sexp)
+           When [true], we need to produce a wrapper module in every library/executables
+           directory using this library since the internal toplevel wrapper doesn't
+           exist. *)
+        repackaged : bool [@default false]
+      ; (* Normally the opam package name is inferred from the [public_name] field,
+           however some libraries do not follow this convention. In this case this field
+           specify which opam package defines the library. *)
+        opam_package : string sexp_option
+      } [@@deriving of_sexp]
+  end
 
-    let default = Internal (internal_package_of_sexp (Sexp.List []))
+  module Mode = struct
+    type t = Byte | Native [@@deriving of_sexp]
+  end
+
+  module Kind = struct
+    type t = Normal | Ppx_rewriter | Ppx_type_conv_plugin [@@deriving of_sexp]
   end
 
   type t = {
@@ -220,27 +380,49 @@ module Library_conf = struct
        module contained by the library.  The only mandatory field in the config. *)
     name : Libname.t;
 
+    (* Public release: name under which this library is referred once installed on the
+       system *)
     public_name : Findlib_package_name.t sexp_option;
 
-    public_release : Public_release.t [@default Public_release.default];
+    (* Public release: One line description *)
+    synopsis : string sexp_option;
+
+    (* Public release: List of header files installed, i.e. that are made available to
+       stubs in other libraries *)
+    public_headers : string sexp_list;
+
+    (* Runtime deps when the library is a ppx plugin. *)
+    ppx_runtime_libraries : Libdep_name.t sexp_list;
+
+    (* Modes to build for. This is not used in our rules but is used for the public
+       release for libraries that don't build in native mode. *)
+    modes : Mode.t list [@default [Byte; Native]];
+
+    (* Kind of the library. This is only used in the public release to setup things so
+       that our ppx rewriters are usable with other build systems. *)
+    kind : Kind.t [@default Normal];
+
+    (* Virtual dependencies on opam packages. Some libraries require some opam package to
+       be present even though they don't install anything. We have several cases:
+
+       - async_ssl requires the conf-openssl packages, which checks that the openssl C
+       library is properly installed and requires the correct system package for a wide
+       range of systems
+
+       - some of our packages are using ctypes.foreign. The ctypes package will only build
+       and install ctypes.foreign if the opam package ctypes-foreign is
+       installed. ctypes-foreign itself installs nothing. *)
+    virtual_deps : string sexp_list;
+
+    (* Set for external libraries imported in our tree. This is used for the public
+       release, so that we know how to handle dependencies on this library. *)
+    external_lib : External.t sexp_option;
 
     (* [libraries] are libraries required for the compilation of this library
        Defaults to the empty list; but very unusual for this field to be omitted. *)
     libraries : Libdep_name.t sexp_list;
 
     (* The following fields are all optional; the defaults are often fine... *)
-
-    (* [wrapped] selects if the library should be built such that the modules are wrapped
-       within an extra level of namespace, named for the library.  This field used to be
-       named [packed].
-       How this is achieved depends on the setting of [PACKING] env-var
-         true ->
-            Use the -pack/-for-pack flags of the ocaml compiler.
-         false ->
-            Dont use the -pack/-for-pack flags.
-            Generate renaming file (.ml-gen) from list of modules.
-            Use combination of -open and -o arg of 4.02 compiler. *)
-    wrapped : bool [@default true];
 
     (* [modules] lists the names of all modules included in this library.  The names are
        written as lower case, corresponding to filenames containing the ML module
@@ -277,8 +459,8 @@ module Library_conf = struct
 
     (* Modify the flags passed to the c/c++ compiler. See the documentation for [flags]
        above. *)
-    c_flags : Ordered_set_lang.t sexp_option;
-    cxx_flags : Ordered_set_lang.t sexp_option;
+    c_flags : Ordered_set_lang.Unexpanded.t sexp_option;
+    cxx_flags : Ordered_set_lang.Unexpanded.t sexp_option;
 
     (* [cxx_suf] overrides the suffix expected for C++ files. The default is .cpp *)
     cxx_suf : string option [@default None];
@@ -291,34 +473,41 @@ module Library_conf = struct
     js_of_ocaml : Js_of_ocaml_conf.t sexp_option;
 
 
-    includes : string sexp_list;
-    library_flags : string sexp_list;
+    includes : String_with_vars.t sexp_list;
+    library_flags : Ordered_set_lang.Unexpanded.t sexp_option;
 
     c_names : string sexp_list;
     cxx_names : string sexp_list;
-    o_names : string sexp_list;
+    o_names : String_with_vars.t sexp_list;
 
-    preprocess : Preprocess_spec.t list [@default preprocess_default];
+    preprocess : Preprocess_specs.t [@default preprocess_default];
     preprocessor_deps : Dep_conf.t sexp_list;
+
+    (* Call a command on all ocaml modules to enforce coding conventions *)
+    lint : Lint_spec.t sexp_option;
+
     (** Configuration for building and running inline tests *)
     inline_tests : Inline_tests.t [@default Inline_tests.default];
-    cclibs : string sexp_list;
+    cclibs : Ordered_set_lang.Unexpanded.t sexp_option;
     skip_from_default : bool [@default false];
   } [@@deriving of_sexp, fields]
 
   let t_of_sexp sexp =
     let t = t_of_sexp sexp in
-    begin match t.inline_tests.javascript, t.js_of_ocaml with
-    | (`build_but_dont_run | `build_and_run), None ->
-      Sexplib.Conv.of_sexp_error
-        "cannot enable javascript tests because the library is not supported in \
-         javascript (the js_of_ocaml field is missing)"
-        sexp
-    | `dont_build_dont_run, None
-    | (`dont_build_dont_run | `build_but_dont_run | `build_and_run), Some _ -> ()
-    end;
+    Inline_tests.validate t.inline_tests ~sexp
+      ~has_js_of_ocaml:(Option.is_some t.js_of_ocaml);
+    (match t.external_lib, t.public_name with
+     | Some _, None ->
+       of_sexp_error "external libraries must have a (public_name ...) field" sexp
+     | _ -> ());
     t
 
+  let to_lib_in_the_tree ~dir t : Ocaml_types.Lib_in_the_tree.t =
+    { name                  = t.name
+    ; public_name           = t.public_name
+    ; source_path           = dir
+    ; ppx_runtime_libraries = t.ppx_runtime_libraries
+    }
 end
 
 module Projections_check = struct
@@ -330,43 +519,11 @@ module Projections_check = struct
 end
 
 module Executables_conf = struct
-  module Public_release = struct
-    type exe =
-      { name       : string
-      ; install_as : string option
-      ; mode       : Public_release_types.Executable.Mode.t
-      }
-
-    let exe_of_sexp (sexp : Sexp.t) =
-      match sexp with
-      | Atom name ->
-        { name; install_as = None; mode = Best }
-      | List [Atom name; Atom install_as] ->
-        { name; install_as = Some install_as; mode = Best }
-      | List [Atom name; Atom install_as; Atom ":mode"; s] ->
-        let mode = Public_release_types.Executable.Mode.t_of_sexp s in
-        { name; install_as = Some install_as; mode }
-      | _ ->
-        Sexplib.Conv.of_sexp_error
-          "invalid format, <name> or (<name> <install-as> :mode <mode>) expected"
-          sexp
-
-    type t =
-      { build             : exe list [@default []]
-      ; build_and_install : exe list [@default []]
-      ; build_and_install_as_objects : exe list [@default []]
-      ; extra_deps        : Library_conf.Public_release.extra_dep list  [@default []]
-      }
-    [@@deriving of_sexp]
-
-    let default = t_of_sexp (List [])
-  end
-
   type t = {
     (* Each element of [names] is an executable, without the ".exe" suffix. *)
     names : string list;
+    object_public_name : Findlib_package_name.t sexp_option;
     link_executables : bool [@default true];
-    public_release : Public_release.t [@default Public_release.default];
     projections_check : Projections_check.t sexp_option;
     allowed_ldd_dependencies : Ordered_set_lang.t sexp_option;
     extra_disabled_warnings : int sexp_list;
@@ -376,8 +533,9 @@ module Executables_conf = struct
     (* Immediate dependencies.  It is not necessary to name transitive dependencies or
        modules defined in the same directory.  (For the latter, see [modules] below.) *)
     libraries : Libdep_name.t sexp_list;
-    preprocess : Preprocess_spec.t list [@default preprocess_default];
+    preprocess : Preprocess_specs.t [@default preprocess_default];
     preprocessor_deps : Dep_conf.t sexp_list;
+    lint : Lint_spec.t sexp_option;
     link_flags : string sexp_list;
     js_of_ocaml : Js_of_ocaml_conf.t sexp_option;
     (* Modules in this directory to include in these executables.  By default all modules
@@ -400,7 +558,7 @@ end
 module Jane_script_conf = struct
   type t = {
     libraries : Libname.t sexp_list;
-    pps : Unexpanded_pp.t sexp_list;
+    pps : PP.t sexp_list;
   } [@@deriving of_sexp]
 end
 
@@ -411,7 +569,7 @@ module Unified_tests = struct
   type t =
     { target : string [@default "runtest"]
     ; deps : Dep_conf.t list
-    ; setup_script : string sexp_option
+    ; setup_script : String_with_vars.t sexp_option
     }
   [@@deriving of_sexp]
 end
@@ -434,7 +592,11 @@ module Public_repo = struct
        for when we want to export a generated file. *)
     ; additional_files    : Import.Path.t sexp_list
     (* Extra items to install. The filenames are relative to the external repository. *)
-    ; install_extra       : T.Package.Install_item.t sexp_list
+    ; synopsis            : string
+    ; description         : string
+    ; deps                : Dep_conf.t sexp_list
+    ; hooks               : String_with_vars.t T.Package.Hooks.t
+                              [@default T.Package.Hooks.none]
     }
   [@@deriving of_sexp]
 end
@@ -466,6 +628,52 @@ module Provides_conf = struct
       }
     | sexp ->
       of_sexp_error "[<name>] or [<name> (file <file>)] expected" sexp
+end
+
+module Enforce_style_conf = struct
+  type t =
+    { exceptions : String.Set.t [@default String.Set.empty] }
+  [@@deriving of_sexp]
+end
+
+module Install_conf = struct
+  type file =
+    { src : string
+    ; dst : string option
+    }
+
+  let file_of_sexp (sexp : Sexp.t) =
+    match sexp with
+    | Atom src                             -> { src; dst = None }
+    | List [Atom src; Atom "as"; Atom dst] -> { src; dst = Some dst }
+    | _ ->
+      of_sexp_error
+        "invalid format, <name> or (<name> as <install-as>) expected"
+        sexp
+
+  module Section = struct
+    type t =
+      | Lib
+      | Libexec
+      | Bin
+      | Sbin
+      | Toplevel
+      | Share
+      | Share_root
+      | Etc
+      | Doc
+      | Stublibs
+      | Man
+      | Misc
+    [@@deriving of_sexp]
+  end
+
+  type t =
+    { section : Section.t
+    ; files   : file list
+    ; package : string sexp_option
+    }
+  [@@deriving of_sexp]
 end
 
 module Jbuild = struct
@@ -500,6 +708,20 @@ module Jbuild = struct
   | `public_repo of Public_repo.t
   | `html of Html_conf.t
   | `provides of Provides_conf.t sexp_list
+  | `install of Install_conf.t
+
+  (* [enforce_style] opts in the [jbuild]'s directory to the requirement that (some of)
+     the directory's files are correctly styled according to [bin/apply-style].
+     Currently, style is enforced only for OCaml files ([*.ml], [*.mli]) and the only
+     enforcement is that the indentation agrees with ocp-indent.  We may add additional
+     file types and additional styling in the future.  If an enforced file is not styled
+     correctly, this causes a build-time error; one must either style the file (using
+     [apply-style]) or opt out of the requirement by listing the file in [exceptions].
+     [enforce_style] writes the list of enforced files to [.files-to-style], which can be
+     used by tools other than jenga, e.g. an Emacs [after-save-hook], to automatically
+     run [apply-style]. *)
+  | `enforce_style of Enforce_style_conf.t
+
   ]
   [@@deriving of_sexp]
 end

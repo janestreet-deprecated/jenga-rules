@@ -92,7 +92,7 @@ let packages =
     *>>| fun s ->
     String.split_lines s
     |> List.map ~f:(fun line ->
-      let pkg, path = String.lsplit2_exn line ~on:' 'in
+      let pkg, path = String.lsplit2_exn line ~on:' ' in
       Findlib_package_name.of_string pkg, Path.absolute path
     )
     |> Findlib_package_name.Map.of_alist_exn
@@ -161,7 +161,15 @@ module Query = struct
         Real { result; rules = [rule] }
       else
         let result =
-          Dep.contents flags_path *>>| fun s -> String.split_lines s |> process_output
+          Dep.contents flags_path
+          *>>| fun s ->
+          String.split_lines s
+          |> List.filter_map ~f:(fun s ->
+            let s = String.strip s in
+            if String.is_empty s
+            then None
+            else Some s)
+          |> process_output
         in
         Real { result; rules = [rule] }
     end
@@ -170,6 +178,7 @@ end
 let archives_suffix           = ".external-archives"
 let archives_full_path_suffix = ".external-archives-full-path"
 let include_dirs_suffix       = ".external-include-flags"
+let javascript_linker_option_suffix = ".external-javascript-linker-option"
 
 let archives (module M : Ocaml_mode.S) ~dir ~exe ?(predicates = []) deps =
   Query.create ~dir (exe ^ M.exe) deps ~format:"%a" ~suffix:archives_suffix
@@ -178,6 +187,10 @@ let archives (module M : Ocaml_mode.S) ~dir ~exe ?(predicates = []) deps =
 let archives_full_path (module M : Ocaml_mode.S) ~dir ~exe deps =
   Query.create ~dir (exe ^ M.exe) deps ~format:"%d/%a" ~suffix:archives_full_path_suffix
     ~predicates:[M.which_str]
+
+let javascript_linker_option (module M : Ocaml_mode.S) ~dir ~exe deps =
+  Query.create ~dir (exe ^ M.exe) deps ~format:"%o" ~suffix:javascript_linker_option_suffix
+    ~predicates:["javascript"; "jsoo_noruntime"; M.which_str]
 
 let include_flags ~dir base lib_deps =
   Query.create ~dir base lib_deps ~format:"%d"

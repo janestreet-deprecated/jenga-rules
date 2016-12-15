@@ -25,7 +25,7 @@ let eval t ~special_values =
     | Sexp.Atom "\\" :: sexps -> of_sexps_negative acc sexps
     | elt :: sexps ->
       let elts = of_sexp elt in
-      let acc = List.filter acc ~f:(fun acc_elt -> not (List.mem elts acc_elt)) in
+      let acc = List.filter acc ~f:(fun acc_elt -> not (List.mem_string elts acc_elt)) in
       of_sexps_negative acc sexps
     | [] -> List.rev acc
   in
@@ -37,3 +37,21 @@ let eval_with_standard t_opt ~standard =
   | Some t -> eval t ~special_values:[("standard", standard)]
 
 let standard = sexp_of_string ":standard"
+
+module Unexpanded = struct
+  type t = Sexp.t [@@deriving of_sexp]
+
+  let files t =
+    let rec loop acc : t -> _ = function
+      | Atom _ -> acc
+      | List [Atom "<"; Atom fn] -> Set.add acc fn
+      | List l -> List.fold_left l ~init:acc ~f:loop
+    in
+    loop String.Set.empty t
+
+  let rec expand (t : t) ~files_contents =
+    match t with
+    | Atom _ -> t
+    | List [Atom "<"; Atom fn] -> Map.find_exn files_contents fn
+    | List l -> List (List.map l ~f:(expand ~files_contents))
+end

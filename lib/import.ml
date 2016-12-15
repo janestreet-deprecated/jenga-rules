@@ -6,6 +6,12 @@ include (Jenga_lib.Api
            with module Action := Jenga_lib.Api.Action)
 include String.Replace_polymorphic_compare
 
+module List = struct
+  include List
+  let mem l elt ~equal = mem l elt ~equal (* make ~eq mandatory *)
+  let mem_string l elt = mem l elt ~equal:String.equal
+end
+
 module Var : sig
 
   include module type of struct include Jenga_lib.Api.Var end
@@ -81,6 +87,14 @@ module Path = struct
     if dir = path
     then `Root_or_repo_root
     else `Ok dir
+
+  let split =
+    let rec split_acc acc path =
+      if path = the_root
+      then acc
+      else split_acc (basename path :: acc) (dirname path)
+    in
+    fun path -> split_acc [] path
 end
 
 let relative = Path.relative
@@ -91,7 +105,7 @@ let dirname = Path.dirname
 let suffixed ~dir name suf = relative ~dir (name ^ suf)
 
 let return = Dep.return
-let ( *>>= ) = Dep.bind
+let ( *>>= ) t f = Dep.bind t ~f
 let ( *>>| ) = Dep.map
 
 let quote = Shell.escape

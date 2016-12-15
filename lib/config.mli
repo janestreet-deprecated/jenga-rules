@@ -22,5 +22,3 @@ val hg_prog     : string
 val nodejs_prog : string
 val emacs_prog  : string
 val opam_prog   : string
-
-val extra_base_ppx : string list

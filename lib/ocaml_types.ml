@@ -94,9 +94,10 @@ module Artifact_name : Identifiable = String
 
 module Lib_in_the_tree = struct
   type t =
-    { name        : LN.t
-    ; source_path : Path.t
-    ; public_name : Findlib_package_name.t sexp_option
+    { name                  : LN.t
+    ; source_path           : Path.t
+    ; public_name           : Findlib_package_name.t sexp_option
+    ; ppx_runtime_libraries : Libdep_name.t list
     }
   [@@deriving sexp, compare, fields]
 
@@ -124,6 +125,7 @@ module From_compiler_distribution : sig
   val supported_in_javascript : t -> bool
   val ocamlfind_package : t -> Findlib_package_name.t
   val cmis__partially_implemented : t -> stdlib_dir:Path.t -> Path.t list
+  val lib_of_unit__partially_implemented : unit:string -> t option
 end = struct
   type t =
     | Bigarray
@@ -155,6 +157,30 @@ end = struct
     | Threads          -> "threads"
     | Unix             -> "unix"
 
+  let lib_of_unit__partially_implemented =
+    let table = String.Table.create () in
+    let list =
+      [ Bigarray         , ["bigarray"]
+      ; Dynlink          , ["dynlink"]
+      ; Graphics         , ["graphics";"graphicsX11"]
+      ; Nums             , ["int_misc";"nat";"big_int";"arith_flags";"ratio";"num";"arith_status"]
+      ; Ocamlcommon      , []
+      ; Ocamlopttoplevel , []
+      ; Ocamltoplevel    , []
+      ; Ocamlbytecomp    , []
+      ; Ocamloptcomp     , []
+      ; Str              , ["str"]
+      ; Threads          , ["thread";"mutex";"condition";"event";"threadUnix"]
+      ; Unix             , ["unix";"unixLabels"]
+      ]
+    in
+    List.iter list ~f:(fun (lib, units) ->
+      List.iter units ~f:(fun unit ->
+        String.Table.add_exn table ~key:unit ~data:lib
+      )
+    );
+    fun ~unit -> String.Table.find table unit
+
   let libdep_name t = Libdep_name.of_string (to_string t)
 
   let artifact_dir_relative_to_stdlib_dir = function
@@ -168,8 +194,9 @@ end = struct
     | Some s -> Some ("+" ^ s)
 
   let transitive_deps = function
-    | Bigarray | Dynlink | Graphics | Nums | Str | Unix | Threads
+    | Bigarray | Dynlink | Graphics | Nums | Str | Unix
     | Ocamlcommon | Ocamlbytecomp | Ocamloptcomp -> []
+    | Threads -> [ Unix ]
     | Ocamltoplevel -> [ Ocamlcommon ; Ocamlbytecomp ]
     | Ocamlopttoplevel -> [ Ocamlcommon ; Ocamloptcomp ; Dynlink ]
 

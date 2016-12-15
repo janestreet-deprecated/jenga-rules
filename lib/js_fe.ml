@@ -20,31 +20,16 @@ module Make(Hg : sig
   let fe_obligations ~repo = relative ~dir:(fe_dir ~repo) "obligations-repo.sexp"
   let fe_obligations_global = relative ~dir:(fe_dir ~repo:Path.the_root) "obligations-global.sexp"
 
-  let rec safe_dir_exists ~dir =
-    if Path.(=) dir Path.the_root
-    then return true
-    else
-      safe_dir_exists ~dir:(dirname dir) *>>= function
-      | false -> return false
-      | true ->
-        Dep.subdirs ~dir:(dirname dir) *>>| fun subs ->
-        List.mem subs dir
-
-  let safe_file_exists path =
-    safe_dir_exists ~dir:(Path.dirname path) *>>= function
-    | false -> Dep.return false
-    | true ->
-      Dep.file_existence path *>>= fun () ->
-      Dep.file_exists path
-
   let fe_sexp_deps ~repo =
     Hg.manifest_dirs ~repo *>>= fun dirs ->
     Dep.all_unit (
-      List.map dirs ~f:(fun dir ->
+      List.concat_map dirs ~f:(fun dir ->
         let file = relative ~dir dot_fe_sexp_basename in
-        safe_file_exists file *>>= function
-        | true -> Dep.path file
-        | false -> return ()
+        [ Dep.file_existence file
+        ; Dep.file_exists file *>>= function
+          | true -> Dep.path file
+          | false -> return ()
+        ]
       ))
 
   let is_an_fe_repo ~repo =
@@ -268,7 +253,7 @@ module Make(Hg : sig
               files_in_projections ~projections
               *>>| fun x -> Ok x))
       *>>| fun (dependencies_and_targets, (tracked_files, rhs_or_error)) ->
-      Or_error.bind rhs_or_error (fun files_in_projections ->
+      Or_error.bind rhs_or_error ~f:(fun files_in_projections ->
         internal_check ~dependencies_and_targets ~tracked_files ~files_in_projections
       )
     ;;

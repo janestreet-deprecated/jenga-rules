@@ -142,7 +142,7 @@ let include_paths_of_cflags ~dir flags =
   |> List.map ~f:(Path.relative_or_absolute ~dir)
 
 let (//) xs ys = (* items in result are ordered like xs *)
-  let set = Hash_set.Poly.of_list ys in
+  let set = String.Hash_set.of_list ys in
   List.filter xs ~f:(fun x -> not (Hash_set.mem set x))
 
 let file_exists_or_is_buildable path =
