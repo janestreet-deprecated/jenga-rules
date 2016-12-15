@@ -21,7 +21,7 @@ module Package_dep = struct
  type t =
    | Internal of string
    | External of string
-  [@@deriving compare, sexp]
+ [@@deriving compare, sexp]
 end
 
 module Lib_info = struct

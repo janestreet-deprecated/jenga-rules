@@ -418,6 +418,10 @@ module Library_conf = struct
        release, so that we know how to handle dependencies on this library. *)
     external_lib : External.t sexp_option;
 
+    (* For the public release: means that the library is optional and shouldn't be
+       installed if some dependency is missing *)
+    optional : sexp_bool;
+
     (* [libraries] are libraries required for the compilation of this library
        Defaults to the empty list; but very unusual for this field to be omitted. *)
     libraries : Libdep_name.t sexp_list;
