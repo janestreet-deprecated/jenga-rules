@@ -41,10 +41,6 @@ module Make(Jenga_root : sig
 
 end = struct
   open Jenga_root
-  let _ = BN.to_module
-  let _ = Lib_modules.impls_and_intfs
-  let _ = Lib_modules.load
-  let _ = User_or_gen_config.load
   module T = Public_release_types
 
   (* Where the descriptions of external packages are *)
