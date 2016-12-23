@@ -97,7 +97,6 @@ module Lib_in_the_tree = struct
     { name                  : LN.t
     ; source_path           : Path.t
     ; public_name           : Findlib_package_name.t sexp_option
-    ; ppx_runtime_libraries : Libdep_name.t list
     }
   [@@deriving sexp, compare, fields]
 

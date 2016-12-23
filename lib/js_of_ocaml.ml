@@ -166,12 +166,12 @@ let rule_aux ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~f
      let build_info_flags =
        match build_info with
        | None -> []
-       | Some build_info -> [sprintf "--file=%s:/build_info.sexp" (reach_from ~dir build_info)]
+       | Some build_info -> [sprintf "--file=%s:/static/build_info.sexp" (reach_from ~dir build_info)]
      in
      let hg_version_flags =
        match hg_version with
        | None -> []
-       | Some hg_version -> [sprintf "--file=%s:/hg_version.out" (reach_from ~dir hg_version)]
+       | Some hg_version -> [sprintf "--file=%s:/static/hg_version.out" (reach_from ~dir hg_version)]
      in
      let flags =
        [ "--no-runtime"

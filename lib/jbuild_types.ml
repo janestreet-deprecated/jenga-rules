@@ -86,14 +86,14 @@ module User_action = struct
       | Chdir (fn, t) -> fold t ~init:(f acc fn) ~f
       | Setenv (var, value, t) -> fold t ~init:(f (f acc var) value) ~f
 
-    let to_action ~dir (t : string t) =
+    let to_action ?sandbox ~dir (t : string t) =
       let rec loop env dir = function
         | Chdir (fn, t) ->
           loop env (Path.relative ~dir fn) t
         | Setenv (var, value, t) ->
           loop ((var, value) :: env) dir t
         | Run (prog, args) ->
-          Action.process ~env ~dir prog args
+          Action.process ?sandbox ~env ~dir prog args
       in
       loop [] dir t
   end
@@ -123,10 +123,10 @@ module User_action = struct
 
   module Unexpanded = String_with_vars.Lift(T)
 
-  let to_action ~dir (t : string t) =
+  let to_action ?sandbox ~dir (t : string t) =
     match t with
-    | Bash cmd -> bash ~dir cmd
-    | Shexp shexp -> Mini_shexp.to_action ~dir shexp
+    | Bash cmd -> bash ?sandbox ~dir cmd
+    | Shexp shexp -> Mini_shexp.to_action ?sandbox ~dir shexp
 end
 
 module Names_spec = struct
@@ -313,11 +313,25 @@ module Inline_tests = struct
   }
 end
 
+module Sandbox_conf = struct
+  include Jenga_lib.Api.Sandbox
+  let t_of_sexp : Sexp.t -> t = function
+    | Atom "none" -> none
+    | Atom "hardlink" | List [Atom "hardlink"] -> hardlink
+    | Atom "copy" | List [Atom "copy"] -> copy
+    | Atom "ignore_targets" | List [Atom "ignore_targets"] -> hardlink_ignore_targets
+    | List [Atom "hardlink"; Atom "ignore_targets"] -> hardlink_ignore_targets
+    | List [Atom "copy"; Atom "ignore_targets"] -> copy_ignore_targets
+    | sexp ->
+      Sexplib.Conv.of_sexp_error "invalid sandbox kind" sexp
+end
+
 module Rule_conf = struct
   type t = {
     targets : string list;
     deps : Dep_conf.t list;
     action : User_action.Unexpanded.t;
+    sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
   } [@@deriving of_sexp, fields]
 end
 
@@ -326,6 +340,7 @@ module Alias_conf = struct
     name : string;
     deps : Dep_conf.t list;
     action : User_action.Unexpanded.t sexp_option;
+    sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
   } [@@deriving of_sexp, fields]
 end
 
@@ -478,11 +493,12 @@ module Library_conf = struct
 
 
     includes : String_with_vars.t sexp_list;
-    library_flags : Ordered_set_lang.Unexpanded.t sexp_option;
+    library_flags : String_with_vars.t sexp_list;
 
     c_names : string sexp_list;
     cxx_names : string sexp_list;
     o_names : String_with_vars.t sexp_list;
+    c_libraries : Ordered_set_lang.Unexpanded.t sexp_option;
 
     preprocess : Preprocess_specs.t [@default preprocess_default];
     preprocessor_deps : Dep_conf.t sexp_list;
@@ -492,7 +508,7 @@ module Library_conf = struct
 
     (** Configuration for building and running inline tests *)
     inline_tests : Inline_tests.t [@default Inline_tests.default];
-    cclibs : Ordered_set_lang.Unexpanded.t sexp_option;
+
     skip_from_default : bool [@default false];
   } [@@deriving of_sexp, fields]
 
@@ -507,10 +523,9 @@ module Library_conf = struct
     t
 
   let to_lib_in_the_tree ~dir t : Ocaml_types.Lib_in_the_tree.t =
-    { name                  = t.name
-    ; public_name           = t.public_name
-    ; source_path           = dir
-    ; ppx_runtime_libraries = t.ppx_runtime_libraries
+    { name        = t.name
+    ; public_name = t.public_name
+    ; source_path = dir
     }
 end
 

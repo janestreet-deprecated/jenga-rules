@@ -1,15 +1,52 @@
 open Core.Std
 include (Jenga_lib.Api
          : module type of struct include Jenga_lib.Api end
-           with module Var := Jenga_lib.Api.Var
-           with module Path := Jenga_lib.Api.Path
-           with module Action := Jenga_lib.Api.Action)
+         with module Var := Jenga_lib.Api.Var
+         with module Path := Jenga_lib.Api.Path
+         with module Action := Jenga_lib.Api.Action)
 include String.Replace_polymorphic_compare
 
 module List = struct
   include List
   let mem l elt ~equal = mem l elt ~equal (* make ~eq mandatory *)
   let mem_string l elt = mem l elt ~equal:String.equal
+end
+
+module Sexp = struct
+  include Sexp
+
+  let handle_result ~source : ('a, Parsexp.Conv_error.t) Result.t -> 'a = function
+    | Ok x -> x
+    | Error (Parse_error err) ->
+      let pos = Parsexp.Parse_error.position err in
+      Located_error.raise
+        ~loc:{ source
+             ; line      = pos.line
+             ; start_col = pos.col
+             ; end_col   = pos.col
+             }
+        (Parsexp.Parse_error.message err)
+    | Error (Of_sexp_error err) ->
+      let loc : Located_error.Loc.t =
+        match Parsexp.Of_sexp_error.location err with
+        | None -> { source; line = 1; start_col = 0; end_col = 0 }
+        | Some loc ->
+          { source
+          ; line      = loc.start_pos.line
+          ; start_col = loc.start_pos.col
+          ; end_col   = loc.end_pos.offset - loc.start_pos.offset + loc.start_pos.col
+          }
+      in
+      Located_error.raise ~loc
+        (match Parsexp.Of_sexp_error.user_exn err with
+         | Failure s -> s
+         | exn -> to_string_hum (Exn.sexp_of_t exn))
+
+  let of_string_conv_exn ~source s conv =
+    handle_result ~source (Parsexp.Conv_single.parse_string s conv)
+
+  let many_of_string_conv_exn ~source s conv =
+    handle_result ~source (Parsexp.Conv_many.parse_string s conv)
 end
 
 module Var : sig
@@ -117,14 +154,14 @@ let ccopts = function
   | _ :: _ as l -> [ "-ccopt"; concat_quoted l ]
 ;;
 
-let bash ?ignore_stderr ~dir command_string =
-  Jenga_lib.Api.Action.process ?ignore_stderr ~dir ~prog:"bash" ~args:[
+let bash ?sandbox ?ignore_stderr ~dir command_string =
+  Jenga_lib.Api.Action.process ?sandbox ?ignore_stderr ~dir ~prog:"bash" ~args:[
     "-e"; "-u"; "-o"; "pipefail";
     "-c"; command_string;
   ] ()
 
-let bashf ?ignore_stderr ~dir fmt =
-  ksprintf (fun str -> bash ?ignore_stderr ~dir str) fmt
+let bashf ?sandbox ?ignore_stderr ~dir fmt =
+  ksprintf (fun str -> bash ?sandbox ?ignore_stderr ~dir str) fmt
 
 let lines_of_string string =
   let lines = String.split string ~on:'\n' in
@@ -154,7 +191,7 @@ let remove_dups_and_sort xs =
 module Action = struct
   include Jenga_lib.Api.Action
 
-  let process ?env ?ignore_stderr ~dir prog args =
+  let process ?env ?sandbox ?ignore_stderr ~dir prog args =
     let prog, args =
       match env with
       | None -> prog, args
@@ -163,7 +200,7 @@ module Action = struct
         let env = List.map env ~f:(fun (key, data) -> sprintf "%s=%s" key data) in
         "/usr/bin/env", List.concat [ env; prog :: args; ]
     in
-    process ?ignore_stderr ~dir ~prog ~args ()
+    process ?sandbox ?ignore_stderr ~dir ~prog ~args ()
   ;;
 
   let process_with_redirected_stdout ~to_:target ~dir prog args =

@@ -31,10 +31,13 @@ let eval t ~special_values =
   in
   of_sexp t
 
-let eval_with_standard t_opt ~standard =
+let eval_with_standard t ~standard =
+  eval t ~special_values:[("standard", standard)]
+
+let eval_opt_with_standard t_opt ~standard =
   match t_opt with
   | None -> standard
-  | Some t -> eval t ~special_values:[("standard", standard)]
+  | Some t -> eval_with_standard t ~standard
 
 let standard = sexp_of_string ":standard"
 
@@ -44,7 +47,7 @@ module Unexpanded = struct
   let files t =
     let rec loop acc : t -> _ = function
       | Atom _ -> acc
-      | List [Atom "<"; Atom fn] -> Set.add acc fn
+      | List [Atom ":include"; Atom fn] -> Set.add acc fn
       | List l -> List.fold_left l ~init:acc ~f:loop
     in
     loop String.Set.empty t
@@ -52,6 +55,6 @@ module Unexpanded = struct
   let rec expand (t : t) ~files_contents =
     match t with
     | Atom _ -> t
-    | List [Atom "<"; Atom fn] -> Map.find_exn files_contents fn
+    | List [Atom ":include"; Atom fn] -> Map.find_exn files_contents fn
     | List l -> List (List.map l ~f:(expand ~files_contents))
 end

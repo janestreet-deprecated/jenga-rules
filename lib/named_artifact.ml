@@ -26,7 +26,7 @@ type fallback =
   | In_findlib_package of
       Findlib_package_name.t *
       string (* File name inside the findlib package *)
-  | Jane_street_only
+  | No_fallback of string option  (* Optional reason for not having fallback *)
 [@@deriving sexp, compare]
 
 type t =
@@ -53,7 +53,7 @@ let in_findlib name =
 
 let jane_street_only name =
   { name     = Artifact_name.of_string name
-  ; fallback = Jane_street_only
+  ; fallback = No_fallback (Some "This file has not been publicly released by Jane Street.")
   }
 
 let find_prog =
@@ -109,10 +109,18 @@ let path {Store.artifacts; findlib_packages} { name; fallback } : Path.t Dep.t =
               pkg pkg ()
         | Some path -> Dep.return (Path.relative ~dir:path fname)
         end
-      | Jane_street_only ->
+      | No_fallback reason_opt ->
         Dep.return () *>>| fun () ->
+        let reason = match reason_opt with
+          | None   -> ""
+          | Some r -> sprintf " %s" r
+        in
         failwithf
-          !"Could not find `%{Artifact_name}`. \
-            This file has not been publicly released by Jane Street."
-          name ()
+          !"Could not find `%{Artifact_name}`.%s" name reason ()
     end
+
+
+let find t name =
+  if Artifact_name.Map.mem t.Store.artifacts name
+  then Some {name; fallback = No_fallback None}
+  else None

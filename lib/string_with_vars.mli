@@ -1,12 +1,13 @@
-(** String with variables of the form ${...} or $(...) *)
+(** String with variables of the form ${...} or $(...).
 
-open Core.Std
+    Variables cannot contain "${", "$(", ")" or "}". For instance in "$(cat ${x})", only
+    "${x}" will be considered a variable, the rest is text. *)
+
+open! Core.Std
 
 type t [@@deriving of_sexp]
 
 val of_string : string -> t
-
-val vars : t -> String.Set.t
 
 val fold : t -> init:'a -> f:('a -> string -> 'a) -> 'a
 

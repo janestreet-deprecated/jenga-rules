@@ -182,7 +182,8 @@ end = struct
     let load_package_map =
       Dep.contents package_map_file
       *>>| fun s ->
-      Sexp.of_string_conv_exn (String.strip s) [%of_sexp: string Path.Map.t]
+      Sexp.of_string_conv_exn ~source:(File package_map_file)
+        s [%of_sexp: string Path.Map.t]
 
     let create_public_libmap =
       Dep.both
@@ -367,9 +368,11 @@ end = struct
       )
 
     let load ~package =
-      Dep.contents (path ~package)
+      let path = path ~package in
+      Dep.contents path
       *>>| fun s ->
-      Sexp.of_string_conv_exn (String.strip s) [%of_sexp: T.Package.t]
+      Sexp.of_string_conv_exn ~source:(File path)
+        s [%of_sexp: T.Package.t]
   end
 
   let sed_script = root_relative "public-release/sed-manifest-files"
@@ -408,8 +411,8 @@ end = struct
   let load_build_server_config =
     Dep.contents build_servers_config
     *>>| fun contents ->
-    Sexp.of_string_conv_exn
-      (String.strip contents) [%of_sexp: (string * Host_and_port.t) list]
+    Sexp.of_string_conv_exn ~source:(File build_servers_config)
+      contents [%of_sexp: (string * Host_and_port.t) list]
 
   let depends_on_file_but_don't_care_about_changes path =
     Dep.action (Dep.path path *>>= fun () ->

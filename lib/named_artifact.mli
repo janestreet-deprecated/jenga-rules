@@ -36,3 +36,5 @@ val jane_street_only : string -> t
 (** {1 Resolving named artifact} *)
 
 val path : Store.t -> t -> Path.t Dep.t
+
+val find : Store.t -> Artifact_name.t -> t option

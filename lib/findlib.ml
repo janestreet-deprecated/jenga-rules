@@ -14,7 +14,8 @@ let findlib_conf =
   Var.map (Var.register "FINDLIB_CONF") ~f:(fun x ->
     let x = Option.first_some x Config.findlib_conf_default in
     Option.map x ~f:(fun s ->
-      Sexp.of_string_conv_exn (String.strip s) [%of_sexp: findlib_conf]))
+      Sexp.of_string_conv_exn ~source:(Other "variable FINDLIB_CONF")
+        s [%of_sexp: findlib_conf]))
 
 let use_findlib, portable_makefile =
   match Var.peek findlib_conf with
