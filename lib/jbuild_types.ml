@@ -498,7 +498,8 @@ module Library_conf = struct
     c_names : string sexp_list;
     cxx_names : string sexp_list;
     o_names : String_with_vars.t sexp_list;
-    c_libraries : Ordered_set_lang.Unexpanded.t sexp_option;
+    c_libraries : string sexp_list;
+    c_library_flags : Ordered_set_lang.Unexpanded.t sexp_option;
 
     preprocess : Preprocess_specs.t [@default preprocess_default];
     preprocessor_deps : Dep_conf.t sexp_list;

@@ -5266,14 +5266,15 @@ let library_rules dc ~dir library_conf =
         [LN.to_string libname], [static_archive_c ~dir ~o_names ~target:target_a]
   in
   let lib_flags =
-    expand_and_eval_set ~dir library_conf.c_libraries ~standard:[]
-    *>>| fun c_libraries ->
+    expand_and_eval_set ~dir library_conf.c_library_flags ~standard:[]
+    *>>| fun c_library_flags ->
     List.concat
       [ link_time_args_for_c_compiler (
           List.map stub_names ~f:(sprintf "-l%s_stubs"))
       ; List.map library_conf.library_flags ~f:(expand_vars ~dir)
       ; link_time_args_for_c_compiler (
-          List.map c_libraries ~f:(sprintf "-l%s"))
+          List.map library_conf.c_libraries ~f:(sprintf "-l%s"))
+      ; link_time_args_for_c_compiler c_library_flags
       ]
   in
   let shared_rule =
