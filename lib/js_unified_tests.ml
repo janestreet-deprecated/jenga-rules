@@ -7,8 +7,10 @@ type t =
   ; setup_script : string option
   }
 
-let omake_style_varname = "UNIFIED_TESTS_OMAKE_STYLE_ERRORS"
-let omake_style = Var.peek_register_bool omake_style_varname ~default:false
+let ocaml_style_varname = "UNIFIED_TESTS_OCAML_STYLE_ERRORS"
+let ocaml_style = Var.peek_register_bool ocaml_style_varname
+                    ~default:(Var.peek_register_bool "UNIFIED_TESTS_OMAKE_STYLE_ERRORS"
+                                ~default:false)
 let ascii_diffs_varname = "UNIFIED_TESTS_ASCII_DIFFS"
 let ascii_diffs = Var.peek_register_bool ascii_diffs_varname ~default:false
 
@@ -35,7 +37,7 @@ export %s=%{Bool}
 %s
 %{quote} \"$@\"
 "
-              omake_style_varname omake_style
+              ocaml_style_varname ocaml_style
               ascii_diffs_varname ascii_diffs
               (match setup_script with
                | None -> "# no specified file to source"

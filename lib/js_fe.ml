@@ -7,10 +7,14 @@ module Make(Hg : sig
   end) = struct
 
   module Projection = struct
-    type t = {
-      repo : Path.t;
-      name : string;
-    } [@@deriving fields]
+    module T = struct
+      type t = {
+        repo : Path.t;
+        name : string;
+      } [@@deriving compare, fields, hash, sexp_of]
+    end
+    include T
+    include Hashable.Make_plain(T)
     let create ~repo ~name = { repo; name; }
   end
 
@@ -39,23 +43,25 @@ module Make(Hg : sig
     | true -> Dep.file_exists (fe_obligations ~repo)
 
   let list_projections =
-    Hg.all_the_repos *>>= fun repos ->
-    Dep.List.concat_map repos ~f:(fun repo ->
-      is_an_fe_repo ~repo
-      *>>= function
-      | false -> return []
-      | true ->
-        Dep.action_stdout (
-          Dep.all_unit [
-            Dep.path fe_prog;
-            Dep.path (fe_obligations ~repo);
-            Dep.path fe_obligations_global;
-          ] *>>| fun () ->
-          bashf ~dir:repo
-            !"%{quote} obligations list-projections"
-            (Path.to_absolute_string fe_prog)
-        ) *>>| fun s ->
-        List.map (String.split_lines s) ~f:(fun name -> Projection.create ~repo ~name)
+    Dep.memoize ~name:"list projections" (
+      Hg.all_the_repos *>>= fun repos ->
+      Dep.List.concat_map repos ~f:(fun repo ->
+        is_an_fe_repo ~repo
+        *>>= function
+        | false -> return []
+        | true ->
+          Dep.action_stdout (
+            Dep.all_unit [
+              Dep.path fe_prog;
+              Dep.path (fe_obligations ~repo);
+              Dep.path fe_obligations_global;
+            ] *>>| fun () ->
+            bashf ~dir:repo
+              !"%{quote} obligations list-projections"
+              (Path.to_absolute_string fe_prog)
+          ) *>>| fun s ->
+          List.map (String.split_lines s) ~f:(fun name -> Projection.create ~repo ~name)
+      )
     )
 
   let projection_files_action projection ~follow_up:(dep, follow_up_command) =
@@ -73,11 +79,14 @@ module Make(Hg : sig
       (Path.to_absolute_string fe_prog) name follow_up_command
 
   let no_dep = return ()
-  let projection_files projection =
-    Dep.action_stdout (
-      projection_files_action projection ~follow_up:(no_dep, "cat")
-    ) *>>| fun s ->
-    List.map (String.split_lines s) ~f:(relative ~dir:projection.repo)
+  let projection_files =
+    Memo.general ~hashable:Projection.hashable (fun projection ->
+      Dep.memoize ~name:(sprintf !"projection_files %{sexp#mach:Projection.t}" projection)
+        (Dep.action_stdout
+           (projection_files_action projection ~follow_up:(no_dep, "cat "))
+         *>>| fun s ->
+         List.map (String.split_lines s) ~f:(relative ~dir:projection.repo)))
+  ;;
 
   let rule_for_projection_files ~dir projection ~target =
     Rule.create ~targets:[target]
@@ -174,21 +183,23 @@ module Make(Hg : sig
     ;;
 
     let tracked_files =
-      Hg.all_the_repos
-      *>>= fun all_the_repos ->
-      (* Better not miss repositories in here, because if we say a file is not tracked, then
-         we won't require that it is in the right projection. *)
-      Dep.List.concat_map all_the_repos ~f:(fun repo ->
-        Dep.action_stdout (
-          Dep.path (Path.relative ~dir:repo ".hg/dirstate") *>>| fun () ->
-          (* Here we include all files except -i. This test is not particularly useful when
-             the repository is not clean, but just in case something goes wrong, let's
-             approximate in the direction of consider that more things should be
-             reviewed. *)
-          Action.process ~dir:repo "hg" ["st"; "-mardcun"])
-        *>>| fun x ->
-        List.map (String.split_lines x) ~f:(relative ~dir:repo)
-      ) *>>| Path.Set.of_list
+      Dep.memoize ~name:"tracked files" (
+        Hg.all_the_repos
+        *>>= fun all_the_repos ->
+        (* Better not miss repositories in here, because if we say a file is not tracked, then
+           we won't require that it is in the right projection. *)
+        Dep.List.concat_map all_the_repos ~f:(fun repo ->
+          Dep.action_stdout (
+            Dep.path (Path.relative ~dir:repo ".hg/dirstate") *>>| fun () ->
+            (* Here we include all files except -i. This test is not particularly useful when
+               the repository is not clean, but just in case something goes wrong, let's
+               approximate in the direction of consider that more things should be
+               reviewed. *)
+            Action.process ~dir:repo "hg" ["st"; "-mardcun"])
+          *>>| fun x ->
+          List.map (String.split_lines x) ~f:(relative ~dir:repo)
+        ) *>>| Path.Set.of_list
+      )
     ;;
 
     let internal_check ~dependencies_and_targets ~tracked_files ~files_in_projections =

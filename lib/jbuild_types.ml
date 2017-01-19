@@ -13,14 +13,7 @@ end = struct
 
   let of_string s =
     assert (not (String.is_prefix s ~prefix:"-"));
-    let s =
-      match s with
-      | "BASE" -> "ppx_base"
-      | "JANE" -> "ppx_jane"
-      | "JANE_KERNEL" -> "ppx_jane_kernel"
-      | _ -> s
-    in
-    of_string s
+    s
 
   let t_of_sexp sexp =
     let s = string_of_sexp sexp in
@@ -122,11 +115,6 @@ module User_action = struct
   include T
 
   module Unexpanded = String_with_vars.Lift(T)
-
-  let to_action ?sandbox ~dir (t : string t) =
-    match t with
-    | Bash cmd -> bash ?sandbox ~dir cmd
-    | Shexp shexp -> Mini_shexp.to_action ?sandbox ~dir shexp
 end
 
 module Names_spec = struct
@@ -207,17 +195,9 @@ module Findlib_package_name = Ocaml_types.Findlib_package_name
 module Js_of_ocaml_conf = struct
   type t =
     { flags            : string sexp_list;
-      javascript_files : string sexp_list }
+      javascript_files : string sexp_list;
+      toplevel         : Libdep_name.t sexp_list }
   [@@deriving of_sexp]
-end
-
-module Preprocessor_conf = struct
-  type t = {
-    name : Libname.t;
-    libraries : Libdep_name.t sexp_list;
-    extra_disabled_warnings : int sexp_list;
-    preprocess : Preprocess_specs.t [@default preprocess_default];
-  } [@@deriving of_sexp, fields]
 end
 
 module Dep_conf = struct
@@ -230,6 +210,19 @@ module Dep_conf = struct
   let t_of_sexp = function
     | Sexp.Atom s -> File (String_with_vars.of_string s)
     | Sexp.List _ as sexp -> t_of_sexp sexp
+end
+
+module Sandbox_conf = struct
+  include Jenga_lib.Api.Sandbox
+  let t_of_sexp : Sexp.t -> t = function
+    | Atom "none" -> none
+    | Atom "hardlink" | List [Atom "hardlink"] -> hardlink
+    | Atom "copy" | List [Atom "copy"] -> copy
+    | Atom "ignore_targets" | List [Atom "ignore_targets"] -> hardlink_ignore_targets
+    | List [Atom "hardlink"; Atom "ignore_targets"] -> hardlink_ignore_targets
+    | List [Atom "copy"; Atom "ignore_targets"] -> copy_ignore_targets
+    | sexp ->
+      Sexplib.Conv.of_sexp_error "invalid sandbox kind" sexp
 end
 
 (** Configuration of the inline_tests_runner *)
@@ -263,6 +256,8 @@ module Inline_tests = struct
     javascript : build_and_run sexp_option;
     (** Should inline_tests_runner be built as a .exe or as a .so? *)
     only_shared_object : bool [@default false];
+    (** Sandbox to use for running the tests *)
+    sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
   }
   [@@deriving of_sexp]
 
@@ -310,21 +305,12 @@ module Inline_tests = struct
     native = None;
     javascript = None;
     only_shared_object = false;
+    sandbox = Sandbox_conf.hardlink;
   }
 end
 
-module Sandbox_conf = struct
-  include Jenga_lib.Api.Sandbox
-  let t_of_sexp : Sexp.t -> t = function
-    | Atom "none" -> none
-    | Atom "hardlink" | List [Atom "hardlink"] -> hardlink
-    | Atom "copy" | List [Atom "copy"] -> copy
-    | Atom "ignore_targets" | List [Atom "ignore_targets"] -> hardlink_ignore_targets
-    | List [Atom "hardlink"; Atom "ignore_targets"] -> hardlink_ignore_targets
-    | List [Atom "copy"; Atom "ignore_targets"] -> copy_ignore_targets
-    | sexp ->
-      Sexplib.Conv.of_sexp_error "invalid sandbox kind" sexp
-end
+(** The timeout of user commands. *)
+let default_timeout = Time.Span.of_min 5.
 
 module Rule_conf = struct
   type t = {
@@ -332,6 +318,7 @@ module Rule_conf = struct
     deps : Dep_conf.t list;
     action : User_action.Unexpanded.t;
     sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
+    timeout : Time.Span.t option [@default Some default_timeout];
   } [@@deriving of_sexp, fields]
 end
 
@@ -341,6 +328,7 @@ module Alias_conf = struct
     deps : Dep_conf.t list;
     action : User_action.Unexpanded.t sexp_option;
     sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
+    timeout : Time.Span.t option [@default Some default_timeout];
   } [@@deriving of_sexp, fields]
 end
 
@@ -353,7 +341,7 @@ module Compile_c_conf = struct
 end
 
 module Embed_conf = struct
-  type style = No_preprocessing | Ppx | Bilingual [@@deriving of_sexp]
+  type style = No_preprocessing | Ppx [@@deriving of_sexp]
   type t = {
     names : string list;
     libraries : Libdep_name.t sexp_list;
@@ -362,6 +350,33 @@ module Embed_conf = struct
     code_style : style [@default Ppx];
   } [@@deriving of_sexp]
 end
+
+(* Filter "public_release" fields. We do this rather than having a [public_release :
+   Sexp.t sexp_list] field to remove one useless level of parentheses. It also allow to
+   have several (public_release ...) fields in case a specific final ordering makes more
+   sense.
+   The type of the extra fields is in app/jbuilder/src/jbuild_types.ml *)
+let filter_public_release t_of_sexp (sexp : Sexp.t) =
+  match sexp with
+  | Atom _ -> t_of_sexp sexp
+  | List l ->
+    let l =
+      List.filter l ~f:(fun sexp ->
+        match sexp with
+        | List (Atom "public_release" :: l) ->
+          if List.is_empty l then
+            of_sexp_error
+              "this public_release field is useless as it is empty, please remove it"
+              sexp;
+          false
+        | _ -> true)
+    in
+    let new_sexp = Sexp.List l in
+    try
+      t_of_sexp new_sexp
+    with Sexp.Of_sexp_error (exn, sub_sexp) when phys_equal new_sexp sub_sexp ->
+      raise (Sexp.Of_sexp_error (exn, sexp))
+;;
 
 module Library_conf = struct
   module External = struct
@@ -382,60 +397,26 @@ module Library_conf = struct
       } [@@deriving of_sexp]
   end
 
-  module Mode = struct
-    type t = Byte | Native [@@deriving of_sexp]
-  end
-
-  module Kind = struct
-    type t = Normal | Ppx_rewriter | Ppx_type_conv_plugin [@@deriving of_sexp]
-  end
-
   type t = {
     (* [name] is the name of the library; the name must be distinct from the name of any
        module contained by the library.  The only mandatory field in the config. *)
     name : Libname.t;
 
     (* Public release: name under which this library is referred once installed on the
-       system *)
+       system. If this field is missing the library won't be installed and can only be
+       used to build executables or for tests/benchmarks.  *)
     public_name : Findlib_package_name.t sexp_option;
 
-    (* Public release: One line description *)
-    synopsis : string sexp_option;
-
-    (* Public release: List of header files installed, i.e. that are made available to
-       stubs in other libraries *)
-    public_headers : string sexp_list;
+    (* List of header files that are meant to be used by other libraries. This is
+       currently only implemented in the public release. *)
+    install_c_headers : string sexp_list;
 
     (* Runtime deps when the library is a ppx plugin. *)
     ppx_runtime_libraries : Libdep_name.t sexp_list;
 
-    (* Modes to build for. This is not used in our rules but is used for the public
-       release for libraries that don't build in native mode. *)
-    modes : Mode.t list [@default [Byte; Native]];
-
-    (* Kind of the library. This is only used in the public release to setup things so
-       that our ppx rewriters are usable with other build systems. *)
-    kind : Kind.t [@default Normal];
-
-    (* Virtual dependencies on opam packages. Some libraries require some opam package to
-       be present even though they don't install anything. We have several cases:
-
-       - async_ssl requires the conf-openssl packages, which checks that the openssl C
-       library is properly installed and requires the correct system package for a wide
-       range of systems
-
-       - some of our packages are using ctypes.foreign. The ctypes package will only build
-       and install ctypes.foreign if the opam package ctypes-foreign is
-       installed. ctypes-foreign itself installs nothing. *)
-    virtual_deps : string sexp_list;
-
     (* Set for external libraries imported in our tree. This is used for the public
        release, so that we know how to handle dependencies on this library. *)
     external_lib : External.t sexp_option;
-
-    (* For the public release: means that the library is optional and shouldn't be
-       installed if some dependency is missing *)
-    optional : sexp_bool;
 
     (* [libraries] are libraries required for the compilation of this library
        Defaults to the empty list; but very unusual for this field to be omitted. *)
@@ -514,7 +495,7 @@ module Library_conf = struct
   } [@@deriving of_sexp, fields]
 
   let t_of_sexp sexp =
-    let t = t_of_sexp sexp in
+    let t = filter_public_release t_of_sexp sexp in
     Inline_tests.validate t.inline_tests ~sexp
       ~has_js_of_ocaml:(Option.is_some t.js_of_ocaml);
     (match t.external_lib, t.public_name with
@@ -542,7 +523,6 @@ module Executables_conf = struct
   type t = {
     (* Each element of [names] is an executable, without the ".exe" suffix. *)
     names : string list;
-    object_public_name : Findlib_package_name.t sexp_option;
     link_executables : bool [@default true];
     projections_check : Projections_check.t sexp_option;
     allowed_ldd_dependencies : Ordered_set_lang.t sexp_option;
@@ -573,6 +553,8 @@ module Executables_conf = struct
     only_shared_object : bool [@default false];
     skip_from_default : bool [@default false];
   } [@@deriving of_sexp]
+
+  let t_of_sexp sexp = filter_public_release t_of_sexp sexp
 end
 
 module Jane_script_conf = struct
@@ -656,46 +638,6 @@ module Enforce_style_conf = struct
   [@@deriving of_sexp]
 end
 
-module Install_conf = struct
-  type file =
-    { src : string
-    ; dst : string option
-    }
-
-  let file_of_sexp (sexp : Sexp.t) =
-    match sexp with
-    | Atom src                             -> { src; dst = None }
-    | List [Atom src; Atom "as"; Atom dst] -> { src; dst = Some dst }
-    | _ ->
-      of_sexp_error
-        "invalid format, <name> or (<name> as <install-as>) expected"
-        sexp
-
-  module Section = struct
-    type t =
-      | Lib
-      | Libexec
-      | Bin
-      | Sbin
-      | Toplevel
-      | Share
-      | Share_root
-      | Etc
-      | Doc
-      | Stublibs
-      | Man
-      | Misc
-    [@@deriving of_sexp]
-  end
-
-  type t =
-    { section : Section.t
-    ; files   : file list
-    ; package : string sexp_option
-    }
-  [@@deriving of_sexp]
-end
-
 module Jbuild = struct
   (* [Jbuild.t] describes the various kinds of build configuration descriptions.
      A jbuild file contains the sexp-representation of a list of [Jbuild.t]
@@ -715,7 +657,6 @@ module Jbuild = struct
   | `ocamlyacc of string list
   | `library of Library_conf.t
   | `executables of Executables_conf.t
-  | `preprocessor of Preprocessor_conf.t
   | `embed of Embed_conf.t
   | `jane_script of Jane_script_conf.t
   | `compile_c of Compile_c_conf.t
@@ -724,11 +665,10 @@ module Jbuild = struct
   | `no_utop
   | `unified_tests of Unified_tests.t
   | `toplevel_expect_tests of Toplevel_expect_tests.t
-  | `requires_camlp4
   | `public_repo of Public_repo.t
   | `html of Html_conf.t
   | `provides of Provides_conf.t sexp_list
-  | `install of Install_conf.t
+  | `public_release of Sexp.t sexp_list
 
   (* [enforce_style] opts in the [jbuild]'s directory to the requirement that (some of)
      the directory's files are correctly styled according to [bin/apply-style].

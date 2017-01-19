@@ -3,7 +3,8 @@ include (Jenga_lib.Api
          : module type of struct include Jenga_lib.Api end
          with module Var := Jenga_lib.Api.Var
          with module Path := Jenga_lib.Api.Path
-         with module Action := Jenga_lib.Api.Action)
+         with module Action := Jenga_lib.Api.Action
+         with module Rule := Jenga_lib.Api.Rule)
 include String.Replace_polymorphic_compare
 
 module List = struct
@@ -54,7 +55,6 @@ module Var : sig
   include module type of struct include Jenga_lib.Api.Var end
 
   val register_bool : string -> default:bool        -> bool        t
-  val register_args : string -> default:string list -> string list t
 
   val register_enumeration :
     string ->
@@ -90,10 +90,6 @@ end = struct
     register_with_default name ~default:(Bool.to_string default) ~choices:["true";"false"]
     |> map ~f:(function "false" | "0" -> false | _ -> true)
 
-  let register_args name ~default =
-    register_with_default name ~default:(String.concat ~sep:" " default) ~choices:[]
-    |> map ~f:(String.split ~on:' ')
-
   let register_enumeration name ~choices:choice_map ~default ~fallback =
     (* We don't [assert (Map.mem choice_map default)] so [default] can be resolved by
        [choices] or [fallback] - the same resolution as used when the env-var has a value.
@@ -119,6 +115,7 @@ let force (lazy x) = x
 
 module Path = struct
   include Jenga_lib.Api.Path
+  let hash_fold_t acc t = hash_fold_string acc (to_string t)
   let precise_dirname path =
     let dir = dirname path in
     if dir = path
@@ -154,11 +151,11 @@ let ccopts = function
   | _ :: _ as l -> [ "-ccopt"; concat_quoted l ]
 ;;
 
+let bash_prog = "bash"
+let bash_args = [ "-e"; "-u"; "-o"; "pipefail"; "-c" ]
 let bash ?sandbox ?ignore_stderr ~dir command_string =
-  Jenga_lib.Api.Action.process ?sandbox ?ignore_stderr ~dir ~prog:"bash" ~args:[
-    "-e"; "-u"; "-o"; "pipefail";
-    "-c"; command_string;
-  ] ()
+  Jenga_lib.Api.Action.process ?sandbox ?ignore_stderr ~dir
+    ~prog:bash_prog ~args:(bash_args @ [ command_string ]) ()
 
 let bashf ?sandbox ?ignore_stderr ~dir fmt =
   ksprintf (fun str -> bash ?sandbox ?ignore_stderr ~dir str) fmt
@@ -211,4 +208,20 @@ module Action = struct
                      now, these read-only files would break old builds *)
       (prog :: args) (Path.reach_from ~dir target)
   ;;
+
+  let write_string ?chmod_x string ~target =
+    save ?chmod_x (string^"\n") ~target
+
+end
+
+
+module Rule = struct
+  include Jenga_lib.Api.Rule
+
+  let write_string ?chmod_x string ~target =
+    create ~targets:[target] (return (Action.write_string ?chmod_x string ~target))
+
+  let write_names names ~target =
+    write_string (String.concat ~sep:" " names) ~target
+
 end

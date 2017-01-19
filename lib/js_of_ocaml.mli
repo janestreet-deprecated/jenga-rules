@@ -6,67 +6,74 @@ open! Import
 val exe_suf : string
 val cma_suf : string
 val cmo_suf : string
-val runtime_suf : string
 val jsdeps_suf : string
 
-val with_sourcemap_suf : string -> string
+(** [rule_for_compilation_unit] creates the rule to compile a bytecode compilation unit to
+    JavaScript using the js_of_ocaml compiler.
 
-(** [rule ~dir ~flags ~src:bytecode ~target:javascript_file] creates the rule to
-    compile a bytecode program (or bytecode compilation unit) to JavaScript using
-    the js_of_ocaml compiler.
-
-    [options] are given to js_of_ocaml compiler (ie: --pretty) *)
-val rule
-   : artifacts:Named_artifact.Store.t
+    - [sourcemap] build with sourcemap.
+    - [devel]     build with development mode (eg: it enables pretty by default)
+    - [flags]     list of flags to pass to js_of_ocaml (eg: --pretty)
+    - [src]       bytecode unit (cmo, cma)
+    - [target]    javascript target
+*)
+val rule_for_compilation_unit
+  :  artifacts:Named_artifact.Store.t
+  -> dir:Path.t
   -> sourcemap : bool
   -> devel : bool
-  -> build_info:Path.t option
-  -> hg_version:Path.t option
-  -> dir:Path.t
   -> flags:string list
-  -> findlib_flags:string list Dep.t
-  -> js_files:Path.t list Dep.t
   -> src:Path.t
   -> target:Path.t
   -> Rule.t
 
-val rule_for_standalone_runtime
+(** [rules_for_executable] creates the rules to compile a JavaScript executable
+    using the js_of_ocaml compiler.
+    There exists two modes of compilation
+    1) Whole program compilation, which uses a bytecode executable.
+    2) Separate compilation, which uses individuals units compiled to javascript.
+    Whole program compilation is slower to compile but generate faster and smaller code.
+
+    - [separate_compilation] enable separate compilation.
+
+    - [js_files]     list of extra javascript files.
+    - [flags]        list of flags to pass to js_of_ocaml (eg: --pretty)
+
+    - [libs_dep]     libraries to link. This is also used to determined
+                     library specific javascript runtimes.
+    - [compute_objs] other units to link
+
+    - [devel]        build with development mode
+    - [toplevel]     build a toplevel with the provided libraries in scope.
+                     This will disable separate compilation.
+    - [exe]          name of the byte code executable. (even for separate compilation)
+
+    - [drop_test]    This will try to drop unit tests and benchmarks from the generated code.
+                     It is most certainly only efficient for whole whole program compilation.
+*)
+val rules_for_executable
   :  artifacts:Named_artifact.Store.t
-  -> sourcemap : bool
-  -> devel : bool
-  -> build_info:Path.t option
+  -> dir:Path.t
+  -> ocaml_where:Import.Path.t
+  -> js_files:Path.t List.t
+  -> libs_dep:Ocaml_types.Lib_dep.t List.t Dep.t
+  -> compute_objs:(Path.t * string) List.t Dep.t
+  -> toplevel:Ocaml_types.Lib_dep.t List.t option
   -> hg_version:Path.t option
-  -> dir:Path.t
-  -> flags:string list
-  -> findlib_flags:string list Dep.t
-  -> js_files:Path.t list Dep.t
-  -> target:Path.t
-  -> Rule.t
+  -> build_info:Path.t option
+  -> separate_compilation:bool
+  -> sourcemap:bool
+  -> devel:bool
+  -> exe:string
+  -> drop_test_and_bench: bool
+  -> path_to_ocaml_artifact:(lib_in_the_tree:Ocaml_types.LN.t -> suf:string -> Import.Path.t)
+  -> flags:String.t List.t
+  -> Rule.t List.t
 
-val runtime_files_for_lib_in_compiler_distribution
-  :  artifacts:Named_artifact.Store.t
-  -> Ocaml_types.From_compiler_distribution.t
-  -> Path.t Dep.t list
-
-val link_js_files
-  :  artifacts:Named_artifact.Store.t
-  -> sourcemap : bool
-  -> dir:Path.t
-  -> files:Path.t list
-  -> target: Path.t
-  -> Action.t Dep.t
-
-(** [from_external_archives ~ocaml_where paths] converts paths of findlib archives
-    into paths of the same archives compiled to JavaScript *)
-val from_external_archives : ocaml_where:Path.t -> Path.t list -> Path.t list Dep.t
-
-(** [from_compiler_distribution lib] returns the path of the library [lib] compiled to JavaScript *)
-val from_compiler_distribution : Ocaml_types.From_compiler_distribution.t -> Path.t
-
-(** Path of the stdlib compiled to JavaScript (stdlib.cma.js) *)
-val stdlib_from_compiler_distribution : Path.t
+val rule_for_library_jsdeps : dir:Path.t -> Ocaml_types.Libname.t -> Path.t list -> Rule.t
 
 val dot_js_dir : Path.t
+
 val setup_dot_js_dir
   :  artifacts:Named_artifact.Store.t
   -> sourcemap : bool

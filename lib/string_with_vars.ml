@@ -1,12 +1,14 @@
 open! Core.Std
 
-type var_syntax = Parens | Braces [@@deriving compare]
+type var_syntax = Parens | Braces [@@deriving sexp_of, compare]
 
 type item =
   | Text of string
   | Var of var_syntax * string
+[@@deriving sexp_of]
 
 type t = item list
+[@@deriving sexp_of]
 
 module Token = struct
   type t =
@@ -17,21 +19,23 @@ module Token = struct
   let tokenise s =
     let len = String.length s in
     let sub i j = String.sub s ~pos:i ~len:(j - i) in
-    let cons_str i j acc = if i = j then acc else String (sub i j) :: acc in
-    let rec loop i j =
-      if j = len
-      then cons_str i j []
+    let cons_str token_start i acc =
+      if token_start = i then acc else String (sub token_start i) :: acc
+    in
+    let rec loop token_start i =
+      if i = len
+      then cons_str token_start i []
       else
-        match s.[j] with
-        | '}' -> cons_str i j (Close Braces :: loop (j + 1) (j + 1))
-        | ')' -> cons_str i j (Close Parens :: loop (j + 1) (j + 1))
-        | '$' -> begin
-            match s.[j + 1] with
-            | '{' -> cons_str i j (Open Braces :: loop (j + 2) (j + 2))
-            | '(' -> cons_str i j (Open Parens :: loop (j + 2) (j + 2))
-            | _   -> loop i (j + 1)
+        match s.[i] with
+        | '}' -> cons_str token_start i (Close Braces :: loop (i + 1) (i + 1))
+        | ')' -> cons_str token_start i (Close Parens :: loop (i + 1) (i + 1))
+        | '$' when i + 1 < len -> begin
+            match s.[i + 1] with
+            | '{' -> cons_str token_start i (Open Braces :: loop (i + 2) (i + 2))
+            | '(' -> cons_str token_start i (Open Parens :: loop (i + 2) (i + 2))
+            | _   -> loop token_start (i + 1)
           end
-        | _ -> loop i (j + 1)
+        | _ -> loop token_start (i + 1)
     in
     loop 0 0
 
@@ -54,6 +58,12 @@ let rec of_tokens : Token.t list -> t = function
     | l -> Text s :: l
 
 let of_string s = of_tokens (Token.tokenise s)
+
+let () =
+  [%test_result: t] (of_string "$(cat ${x})")
+    ~expect:[Text "$(cat "; Var (Braces, "x"); Text ")"];
+  [%test_result: t] (of_string "$") ~expect:[Text "$"];
+;;
 
 let t_of_sexp sexp = of_string (string_of_sexp sexp)
 

@@ -263,8 +263,21 @@ let cmi_maybe_cmx =
 
 module Top = struct
 
-  let ocamlcflags =
-    Var.peek (Var.register_args "OCAMLCFLAGS" ~default:["-g"])
+  let peek_register_ordered_set_lang name ~default =
+    let parsed : Ordered_set_lang.t option =
+      Var.register name
+      |> Var.peek
+      |> Option.map ~f:(fun str ->
+        let sexp =
+          Sexp.many_of_string_conv_exn str Fn.id
+            ~source:(Other ("variable " ^ name))
+        in
+        Ordered_set_lang.t_of_sexp (List sexp))
+    in
+    Ordered_set_lang.eval_opt_with_standard parsed ~standard:default
+  ;;
+
+  let ocamlcflags = peek_register_ordered_set_lang "OCAMLCFLAGS" ~default:["-g"]
 
   let ocamloptflags =
     let default =
@@ -277,7 +290,7 @@ module Top = struct
         | true, true -> "-O3" :: (if unbox_closures then ["-unbox-closures"] else [])
         ]
     in
-    let flags = Var.peek (Var.register_args "OCAMLOPTFLAGS" ~default) in
+    let flags = peek_register_ordered_set_lang "OCAMLOPTFLAGS" ~default in
     if dynlinkable_code && List.mem_string flags "-nodynlink"
     then failwith "OCAMLOPTFLAGS shouldn't contain -nodynlink when DYNLINKABLE_CODE is set to true";
     flags
@@ -301,7 +314,6 @@ module Top = struct
 
   let default_ocamlflags ~disabled_warnings =
     List.concat [
-      ["-I"; "+camlp4"];
       default_common_flags ~disabled_warnings;
       ["-strict-formats"];
       bin_annot_flag;
@@ -337,7 +349,6 @@ let ocamlcomp_path (module Mode : Ocaml_mode.S) =
   match Mode.which with
   | `Byte -> ocamlc_path
   | `Native -> ocamlopt_path
-let camlp4orf_path  = ocaml_bin ^/ "camlp4orf"
 let ocamllex_path   = ocaml_bin ^/ "ocamllex"
 let ocamlyacc_path  = ocaml_bin ^/ "ocamlyacc"
 let ocaml_path      = ocaml_bin ^/ "ocaml"
@@ -345,11 +356,8 @@ let ocaml_path      = ocaml_bin ^/ "ocaml"
 let ocamlobjinfo_path = ocaml_bin ^/ "ocamlobjinfo"
 
 (* Binary in the tree *)
-let camlp4o           = Named_artifact.binary "camlp4o.opt"
-let camlp4o_non_opt   = Named_artifact.binary "camlp4o"
 let metaquot          = Named_artifact.in_findlib "ppx_tools:ppx_metaquot"
 let embedder          = Named_artifact.binary "ocaml-embed-compiler"
-let expand_camlp4_exe = Named_artifact.jane_street_only "expand_camlp4.exe"
 
 (* Cmx in the tree - part of the public release *)
 let ppx_inline_test_runner_cmx =
@@ -386,7 +394,6 @@ let root_var_table = [
   "OCAML"          , ocaml_path;
   "OCAMLC"         , ocamlc_path;
   "OCAMLOPT"       , ocamlopt_path;
-  "camlp4orf"      , camlp4orf_path;
   "ocaml_version"  , Compiler_selection.major_version;
   "ocaml_where"    , ocaml_where;
   "ARCH_SIXTYFOUR" , Bool.to_string (not Compiler_selection.m32);
@@ -443,14 +450,6 @@ end
 
 let bash1 ?target prog args = Bash.create ~prog ~args ~target
 
-let write_string_action ?chmod_x string ~target =
-  Action.save ?chmod_x (string^"\n") ~target
-
-let write_string_rule ?chmod_x string ~target =
-  Rule.create ~targets:[target] (return (write_string_action ?chmod_x string ~target))
-
-let write_names_rule names ~target =
-  write_string_rule (String.concat ~sep:" " names) ~target
 
 (*----------------------------------------------------------------------
  jbuild-ignore
@@ -503,14 +502,16 @@ let rec is_ignored dir =
 ----------------------------------------------------------------------*)
 
 let all_the_repos =
-  begin
-    Dep.subdirs ~dir:Path.the_root *>>| fun xs -> Path.the_root :: xs
-  end
-  *>>= fun candidate_dirs ->
-  Dep.List.concat_map candidate_dirs ~f:(fun dir ->
-    Dep.file_exists (relative ~dir ".hg") *>>| function
-    | true -> [dir]
-    | false -> []
+  Dep.memoize ~name:"all the hg repos" (
+    begin
+      Dep.subdirs ~dir:Path.the_root *>>| fun xs -> Path.the_root :: xs
+    end
+    *>>= fun candidate_dirs ->
+    Dep.List.concat_map candidate_dirs ~f:(fun dir ->
+      Dep.file_exists (relative ~dir ".hg") *>>| function
+      | true -> [dir]
+      | false -> []
+    )
   )
 
 (*----------------------------------------------------------------------
@@ -616,8 +617,7 @@ end = struct
         else
           From_compiler_distribution compiler_lib
       in
-      Hashtbl.set t ~key:(From_compiler_distribution.libdep_name compiler_lib) ~data;
-      Hashtbl.set t ~key:(Libdep_name.of_findlib_package_name findlib_name) ~data);
+      Hashtbl.set t ~key:(From_compiler_distribution.libdep_name compiler_lib) ~data);
     Set.iter findlib_packages ~f:(fun pkg ->
       Hashtbl.set t ~key:(Libdep_name.of_findlib_package_name pkg)
         ~data:(Findlib_package { name = pkg }));
@@ -772,11 +772,6 @@ end = struct
   let the_real_libnames_for_libmap ~dir : Jbuild.t -> Lib_in_the_tree.t list = function
     | `ocamllex _ -> []
     | `ocamlyacc _ -> []
-    | `preprocessor x ->
-      [{ name        = x.name
-       ; public_name = None
-       ; source_path = dir
-       }]
     | `library x -> [Library_conf.to_lib_in_the_tree ~dir x]
     | `executables _ -> []
     | `embed _ -> []
@@ -787,17 +782,15 @@ end = struct
     | `no_utop -> []
     | `unified_tests _ -> []
     | `toplevel_expect_tests _ -> []
-    | `requires_camlp4 -> []
     | `public_repo _ -> []
     | `html _ -> []
     | `provides _ -> []
     | `enforce_style _ -> []
-    | `install _ -> []
+    | `public_release _ -> []
 
   let provides : Jbuild.t -> Provides_conf.t list = function
     | `ocamllex _ -> []
     | `ocamlyacc _ -> []
-    | `preprocessor _ -> []
     | `library _ -> []
     | `executables _ -> []
     | `embed _ -> []
@@ -808,12 +801,11 @@ end = struct
     | `no_utop -> []
     | `unified_tests _ -> []
     | `toplevel_expect_tests _ -> []
-    | `requires_camlp4 -> []
     | `public_repo _ -> []
     | `html _ -> []
     | `provides l -> l
     | `enforce_style _ -> []
-    | `install _ -> []
+    | `public_release _ -> []
 
   let libs ~dir =
     load ~dir *>>| List.concat_map ~f:(the_real_libnames_for_libmap ~dir)
@@ -868,7 +860,7 @@ let gen_renaming_file ~dir ~libname ~modules ~internal =
   in
   Rule.create ~targets:[target] (
     return (
-      write_string_action (shadow ^ ml_text) ~target
+      Action.write_string (shadow ^ ml_text) ~target
     )
   )
 
@@ -894,7 +886,7 @@ let compile_renaming (module Mode : Ocaml_mode.S) ~libname ~dir ~internal =
   let deps = [Dep.path ml_gen] in
   let more_targets, more_deps, bin_annot_flag, cmi_action =
     match Mode.which with
-    | `Native -> [cmt; cmi], [], Top.bin_annot_flag, `Create
+    | `Native -> (cmi :: if bin_annot then [cmt] else []), [], Top.bin_annot_flag, `Create
     | `Byte -> [], [Dep.path cmi], [], `Read
   in
   Rule.create ~targets:(targets @ more_targets) (
@@ -949,7 +941,6 @@ module Lib_modules : sig
     ; bin_annot : bool
     }
   [@@deriving fields]
-  val empty : t
   val rule : dir:Path.t -> libname:LN.t -> t -> Rule.t
   val load : dir:Path.t -> libname:LN.t -> t Dep.t
 end = struct
@@ -961,9 +952,6 @@ end = struct
     }
   [@@deriving sexp, fields]
 
-  (* bin_annot is irrelevant when the rest is empty *)
-  let empty = { impls = []; intfs = []; impls_and_intfs = []; bin_annot = false }
-
   let file ~dir ~libname = LN.suffixed ~dir libname ".modules"
 
   let rule ~dir ~libname t =
@@ -974,7 +962,7 @@ end = struct
       ; bin_annot = t.bin_annot;
       }
     in
-    write_string_rule
+    Rule.write_string
       (t |> sexp_of_t |> Sexp.to_string_hum)
       ~target:(file ~dir ~libname)
 
@@ -989,7 +977,7 @@ let pack_order_file ~dir ~libname = LN.suffixed ~dir libname ".pack-order"
 let stub_names_file ~dir ~libname = LN.suffixed ~dir libname ".stub.names"
 
 let stub_names_rule ~dir ~libname ~stub_names =
-  write_names_rule stub_names ~target:(stub_names_file ~dir ~libname)
+  Rule.write_names stub_names ~target:(stub_names_file ~dir ~libname)
 
 let stubs_archive_file name = "lib" ^ name ^ "_stubs.a"
 let stubs_dependencies ~dir ~libname =
@@ -1018,7 +1006,7 @@ module LL : sig
   (** For both compiling and linking *)
   val dep_on_ocaml_artifacts : Lib_dep.t list -> suffixes:string list -> unit Dep.t list
 
-  (** Direct access to the artifacts (camlp4, merlin, ocaml-plugin etc) *)
+  (** Direct access to the artifacts (merlin, ocaml-plugin etc) *)
   val path_to_ocaml_artifact : lib_in_the_tree:LN.t -> suf:string -> Path.t
   val submodule_cmi_paths : Lib_dep.t -> Path.t list Dep.t
   val in_the_tree_library_dir : LN.t -> Path.t
@@ -1259,10 +1247,15 @@ end = struct
       [ "-I"; reach_from ~dir (In_the_tree.liblink_dir ~libname:lib.name)
       ; LN.to_string lib.name ^ cmxa ]
     | From_compiler_distribution compiler_lib -> begin
-        let archive = From_compiler_distribution.to_string compiler_lib ^ cmxa in
-        match From_compiler_distribution.search_path_dir compiler_lib with
-        | None -> [ archive ]
-        | Some dir -> [ "-I"; dir; archive ]
+        (* Don't including [stdlib.cmxa] as it's implicitly
+           linked by the ocaml compiler. *)
+        if From_compiler_distribution.(equal compiler_lib stdlib)
+        then []
+        else
+          let archive = From_compiler_distribution.to_string compiler_lib ^ cmxa in
+          match From_compiler_distribution.search_path_dir compiler_lib with
+          | None -> [ archive ]
+          | Some dir -> [ "-I"; dir; archive ]
       end
     | Findlib_package _ ->
       []
@@ -1310,34 +1303,18 @@ end = struct
 end
 
 (*----------------------------------------------------------------------
- code_style
-----------------------------------------------------------------------*)
-
-type code_style =
-
-| Requires_camlp4
-  (* ML source code is in camlp4-style, i.e. "with sexp".
-     But is not suitable for on-the-fly translation to ppx-style. *)
-
-| Switched_to_ppx_style
-  (* ML source code is in ppx-style, i.e. [@@deriving sexp]
-     So there is no way to run with camlp4-style preprocessing.
-     And so no diff rules are setup. *)
-
-(*----------------------------------------------------------------------
  directory context (dc)
 ----------------------------------------------------------------------*)
 
 module DC = struct
   type t = {
-    code_style : code_style;
     dir : Path.t;
     link_flags : string list;
     merlinflags : string list;
     ocamlflags : string list;
     ocamlcflags : string list;
     ocamloptflags : string list;
-    xlibnames : LN.t list; (* broader set: from preprocessor/library configs
+    xlibnames : LN.t list; (* broader set: from library configs
                               and includes "bin" if there is an executables config *)
 
     ocaml_plugin_libraries : (string -> Lib_dep.t list option);
@@ -1440,7 +1417,7 @@ let gen_transitive_deps
       Dep.List.concat_map names1 ~f:read_deps *>>| fun namesM ->
       let names = List.map (namesM @ names1) ~f:to_string in
       let names = remove_dups_preserve_order names in
-      write_string_action (String.concat ~sep:" " names) ~target
+      Action.write_string (String.concat ~sep:" " names) ~target
     )
 
 let moduledeps ~dir name = BN.file_words (BN.suffixed ~dir name ".moduledeps")
@@ -1606,7 +1583,7 @@ let gen_interface_deps_from_objinfo (dc : DC.t) ~dir ~wrapped ~libname ~librarie
     in
     let libs = Lib_dep.remove_dups_and_sort libs in
     let words = List.map libs ~f:Lib_dep.to_string in
-    write_string_action (String.concat ~sep:" " words) ~target
+    Action.write_string (String.concat ~sep:" " words) ~target
   )
 
 let transitive_ppx_runtime_libraries ~inside_base libmap pps =
@@ -1652,7 +1629,7 @@ let gen_libdeps libmap ~dir ~libs ~pps ~ppx_runtime_libraries libname =
        *>>| fun rt_deps ->
        let names = List.map (rt_deps @ ppx_runtime_libraries) ~f:Lib_dep.to_string in
        let names = remove_dups_preserve_order names in
-       write_string_action (String.concat ~sep:" " names) ~target
+       Action.write_string (String.concat ~sep:" " names) ~target
      ));
 
     Rule.alias (Alias.libdeps ~dir) [
@@ -1753,8 +1730,7 @@ end = struct
     let deps = List.map deps ~f:(Dep_conf_interpret.only_plain_file ~dir) in
     let needed_artifacts = extract_artifacts artifacts t in
     if Map.is_empty needed_artifacts then
-      let s = expand t ~dir ~artifact_map:String.Map.empty ~targets ~deps in
-      return s
+      return (expand t ~dir ~artifact_map:String.Map.empty ~targets ~deps)
     else begin
       Dep.all
         (List.map (Map.to_alist needed_artifacts) ~f:(fun (name, artifact) ->
@@ -1771,35 +1747,51 @@ end = struct
     end
 end
 
+let time_limit = relative ~dir:Config.script_dir "time_limit"
+
+let expanded_to_action ~sandbox ~timeout ~dir (t : string User_action.t) =
+  let sandbox = Some sandbox in
+  match t with
+  | Shexp shexp -> User_action.Mini_shexp.to_action ?sandbox ~dir shexp
+  | Bash cmd ->
+    match timeout with
+    | None -> bash ?sandbox ~dir cmd
+    | Some span ->
+      let timeout_in_sec = Float.iround_up_exn (Time.Span.to_sec span) in
+      Action.process ?sandbox ~dir
+        (reach_from ~dir time_limit)
+        (Int.to_string timeout_in_sec :: bash_prog :: bash_args @ [ cmd ])
+
 let rule_conf_to_rule ~dir artifacts conf =
-  let {Rule_conf. targets; deps; action; sandbox} = conf in
+  let { Rule_conf. targets; deps; action; sandbox; timeout } = conf in
   let sandbox = if sandbox_rules then sandbox else Sandbox.default in
   let action =
     User_action_interpret.expand ~dir ~artifacts ~targets ~deps action
-    *>>| User_action.to_action ~dir ~sandbox
+    *>>| expanded_to_action ~sandbox ~timeout ~dir
   in
   Rule.create ~targets:(List.map targets ~f:(relative ~dir)) (
     Dep.both
-      (Dep.all_unit (Dep_conf_interpret.list_to_depends ~dir deps))
+      (Dep.all_unit (Dep.path time_limit :: Dep_conf_interpret.list_to_depends ~dir deps))
       action
     *>>| fun ((), action) -> action
   )
 
 let alias_conf_to_rule ~dir ~artifacts conf =
-  let {Alias_conf. name; deps; action; sandbox} = conf in
+  let { Alias_conf. name; deps; action; sandbox; timeout } = conf in
   let sandbox = if sandbox_rules then sandbox else Sandbox.default in
   let action =
     Option.map action
-      ~f:(fun action ->
-        User_action_interpret.expand action ~dir ~artifacts ~targets:[] ~deps
-        *>>| User_action.to_action ~dir ~sandbox)
+      ~f:(fun a ->
+        User_action_interpret.expand ~dir ~artifacts ~targets:[] ~deps a
+        *>>| expanded_to_action ~sandbox ~timeout ~dir)
   in
   let deps = Dep_conf_interpret.list_to_depends ~dir deps in
   let deps =
     match action with
     | None -> deps
     | Some action ->
-      [Dep.action (Dep.both (Dep.all_unit deps) action *>>| fun ((), action) -> action)]
+      [Dep.action (Dep.both (Dep.all_unit (Dep.path time_limit :: deps)) action
+                   *>>| fun ((), action) -> action)]
   in
   Rule.alias (Alias.create ~dir name) deps
 
@@ -1922,7 +1914,7 @@ let compile_c_or_cxx ~dir ~include_search_path ~non_include_flags
         String.concat (List.map search_path ~f:(sprintf "# %s\n"))
       in
       let includes = String.concat ~sep:"\n" includes in
-      write_string_action (search_path_in_comments ^ includes) ~target:deps
+      Action.write_string (search_path_in_comments ^ includes) ~target:deps
     );
     Rule.create ~targets:[o] (
       Dep.both flags (file_words_allow_commments deps)
@@ -2092,17 +2084,17 @@ module PP_style = struct
   | Command of string
   | Metaquot (* ML source code uses ppx-style meta-quotations: i.e. [%expr ],. [%e ]
                 (probably to implement a pre-processor) *)
-  | PP of PP.t list * string list * code_style
+  | PP of PP.t list * string list
 
   let of_kind dc (kind:Preprocess_kind.t) =
-    let {DC. dir; code_style; _} = dc in
+    let {DC. dir; _} = dc in
     match kind with
     | `no_preprocessing -> Nothing
     | `command s        -> Command (expand_vars ~dir s)
     | `metaquot         -> Metaquot
     | `pps names ->
       let pps, flags = Pp_or_flag.split names in
-      PP (pps, flags, code_style)
+      PP (pps, flags)
 
 end
 
@@ -2261,48 +2253,6 @@ let generate_ppx_exe_rules libmap ~dir ~link_flags =
  pp deps
 ----------------------------------------------------------------------*)
 
-let pps_to_camlp4_libs libmap pps =
-  let pps_as_libs =
-    Libmap.resolve_libdep_names_exn libmap (List.map pps ~f:PP.to_libdep_name)
-  in
-  (* In the usual case, this expands [ppx_jane] into the individual preprocessors. *)
-  libs_transitive_closure libmap pps_as_libs
-  *>>= fun libs ->
-  let camlp4_pps =
-    List.filter_map libs ~f:(fun lib ->
-      match Lib_dep.to_string lib with
-      | "ppx_bin_prot"        -> Some "pa_bin_prot"
-      | "ppx_compare"         -> Some "pa_compare"
-      | "ppx_custom_printf"   -> Some "pa_custom_printf"
-      | "ppx_enumerate"       -> Some "pa_enumerate"
-      | "ppx_fail"            -> Some "pa_fail"
-      | "ppx_fields_conv"     -> Some "pa_fields_conv"
-      | "ppx_here"            -> Some "pa_here"
-      | "ppx_pipebang"        -> Some "pa_pipebang"
-      | "ppx_sexp_conv"       -> Some "pa_sexp_conv"
-      | "ppx_sexp_value"      -> Some "pa_structural_sexp"
-      | "ppx_assert"          -> Some "pa_test"
-      | "ppx_type_conv"       -> Some "pa_type_conv"
-      | "ppx_typerep_conv"    -> Some "pa_typerep_conv"
-      | "ppx_variants_conv"   -> Some "pa_variants_conv"
-      | s ->
-        if String.is_prefix s ~prefix:"pa_"
-        then Some s
-        else None)
-    |> List.map ~f:Libdep_name.of_string
-  in
-  (* We need to get the transitive closure again as dependencies might be different for
-     camlp4 *)
-  libs_transitive_closure libmap (Libmap.resolve_libdep_names_exn libmap camlp4_pps)
-
-(* this expresses the dependencies of the commands produced by [get_camlp4_com] *)
-let camlp4_deps_without_user_deps (dc : DC.t) (pps:PP.t list) : unit Dep.t list =
-  [ Named_artifact.path dc.artifacts camlp4o_non_opt *>>= Dep.path
-  ; pps_to_camlp4_libs dc.libmap pps *>>= fun libs ->
-    Dep.all_unit (LL.dep_on_ocaml_artifacts libs  ~suffixes:[".cmo"])
-  ]
-;;
-
 let ppx_deps_without_user_deps (pps:PP.t list) : unit Dep.t list =
   [Dep.path (ppx_executable pps)]
 
@@ -2316,37 +2266,12 @@ let get_pp_deps ~mc : unit Dep.t list =
     begin match pp_style with
     | PP_style.Nothing | Command _ -> []
     | Metaquot -> [Named_artifact.path dc.artifacts metaquot *>>= Dep.path]
-    | PP (pps, _flags, Requires_camlp4)       -> camlp4_deps_without_user_deps dc pps
-    | PP (pps, _flags, Switched_to_ppx_style) -> ppx_deps_without_user_deps pps
+    | PP (pps, _flags) -> ppx_deps_without_user_deps pps
     end
 
 (*----------------------------------------------------------------------
   pp com
 ----------------------------------------------------------------------*)
-
-module Camlp4_com : Stringable = String
-
-let get_camlp4_com ~dc ~dir ~libname ~can_setup_inline_runners ~flags kind (pps:PP.t list) =
-  ignore (can_setup_inline_runners, libname);
-  Dep.both
-    (Named_artifact.path dc.DC.artifacts camlp4o_non_opt)
-    (pps_to_camlp4_libs dc.libmap pps)
-  *>>| fun (camlp4o_non_opt, pps_as_libs) ->
-  Camlp4_com.of_string
-    (concat_quoted (
-       reach_from camlp4o_non_opt ~dir ::
-       List.concat_map pps_as_libs ~f:(fun lib ->
-         match Lib_dep.to_lib_in_the_tree lib with
-         | None -> []
-         | Some lib ->
-           let path ~suf =
-             reach_from ~dir
-               (LL.path_to_ocaml_artifact ~lib_in_the_tree:lib.name ~suf)
-           in
-           match LN.to_string lib.name with
-           | "pa_here" -> [ path ~suf:".cmo"; "-pa-here-dirname"; Path.to_string dir ]
-           | _ -> [path ~suf:".cmo"]
-       ) @ flags @ [ml_kind_to_flag kind]))
 
 let get_ppx_command
       ~kind
@@ -2411,22 +2336,16 @@ let get_pp_com_args ~(kind:ml_kind) ~mc ~name : string list Dep.t =
     Named_artifact.path mc.dc.artifacts metaquot *>>| fun metaquot ->
     ["-ppx"; reach_from ~dir metaquot ]
   | Command string -> Dep.return ["-pp"; string]
-  | PP (pps, flags, code_style) ->
-    match code_style with
-    | Requires_camlp4 ->
-      get_camlp4_com ~dc:mc.dc ~dir ~libname ~flags ~can_setup_inline_runners kind pps
-      *>>| fun com ->
-      ["-pp"; Camlp4_com.to_string com]
-    | Switched_to_ppx_style ->
-      get_ppx_command ~name ~kind:(Some kind) ~dir ~libname
-        ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style pps
-      *>>| fun (prog, args) ->
-      let args =
-        ["-dump-ast";
+  | PP (pps, flags) ->
+    get_ppx_command ~name ~kind:(Some kind) ~dir ~libname
+      ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style pps
+    *>>| fun (prog, args) ->
+    let args =
+      ["-dump-ast";
          "-loc-filename"; (BN.to_string name ^ ml_kind_to_suf kind)
-        ] @ args
-      in
-      ["-pp"; concat_quoted (prog :: args)]
+      ] @ args
+    in
+    ["-pp"; concat_quoted (prog :: args)]
 
 (*----------------------------------------------------------------------
  generate .pp
@@ -2458,29 +2377,10 @@ let generate_pp_using_ppx mc ~kind ~name ~pps ~flags =
     Rule.alias (Alias.pp ~dir) [Dep.path target];
   ]
 
-let generate_pp_using_camlp4 mc kind ~name ~pps ~flags =
-  let {MC. dc; dir; libname; can_setup_inline_runners; _} = mc in
-  let com = get_camlp4_com ~dir ~dc:mc.dc ~libname ~can_setup_inline_runners ~flags kind pps in
-  let pp_deps = get_pp_user_deps ~mc @ camlp4_deps_without_user_deps dc pps in
-  let expander = Named_artifact.path mc.dc.artifacts expand_camlp4_exe in
-  let suf = ml_kind_to_suf kind in
-  let source = BN.suffixed ~dir name suf in
-  let target = BN.suffixed ~dir name (suf ^ ".pp") in
-  [ Rule.create ~targets:[target] (
-      Dep.both expander com *>>= fun (expander_path, com) ->
-      Dep.all_unit (Dep.path expander_path :: Dep.path source :: pp_deps) *>>| fun () ->
-      bashf ~dir !"%{quote} %{quote} %{quote} > %{quote}"
-        (reach_from ~dir expander_path)
-        (Camlp4_com.to_string com)
-        (basename source)
-        (basename target));
-    Rule.alias (Alias.pp ~dir) [Dep.path target];
-  ]
-
 let generate_pp mc ~kind ~name =
   let {MC. pp_style; _} = mc in
   match pp_style with
-  | PP_style.Nothing ->
+  | Nothing ->
     generate_pp_using_ppx mc ~kind ~name ~pps:[]
       ~flags:["-no-check"; "-no-optcomp"]
 
@@ -2492,11 +2392,8 @@ let generate_pp mc ~kind ~name =
     generate_pp_using_ppx mc ~kind ~name ~pps:[PP.of_string "ppx_metaquot"]
       ~flags:["-no-check"; "-no-optcomp"]
 
-  | PP (pps, flags, Switched_to_ppx_style) ->
+  | PP (pps, flags) ->
     generate_pp_using_ppx mc ~kind ~name ~pps ~flags
-
-  | PP (pps, flags, Requires_camlp4) ->
-    generate_pp_using_camlp4 mc kind ~name ~pps ~flags
 
 (*----------------------------------------------------------------------
  Call lint tools
@@ -2800,17 +2697,15 @@ let byte_compile_ml mc ~name =
 let js_compile_cmo mc ~js_of_ocaml ~name =
   let {MC. dir; libname; wrapped; _ } = mc in
   let prefixed_name = PN.of_barename ~wrapped ~libname name in
-  let cmo = PN.suffixed ~dir prefixed_name ".cmo" in
-  let js = PN.suffixed ~dir prefixed_name Js_of_ocaml.cmo_suf in
-  Js_of_ocaml.rule
+  let src    = PN.suffixed ~dir prefixed_name ".cmo" in
+  let target = PN.suffixed ~dir prefixed_name Js_of_ocaml.cmo_suf in
+  Js_of_ocaml.rule_for_compilation_unit
     ~artifacts:mc.dc.artifacts
     ~sourcemap:javascript_sourcemap
     ~devel:for_javascript_development
-    ~build_info:None ~hg_version:None ~dir
+    ~dir
     ~flags:js_of_ocaml.Js_of_ocaml_conf.flags
-    ~findlib_flags:(Dep.return [])
-    ~js_files:(Dep.return [])
-    ~src:cmo ~target:js
+    ~src ~target
 
 let infer_mli_auto mc ~name =
   let {MC. dc; dir; libname; wrapped; _ } = mc in
@@ -2998,102 +2893,6 @@ let setup_ml_compile_rules
 ;;
 
 (*----------------------------------------------------------------------
- preprocessor_conf
-----------------------------------------------------------------------*)
-
-(* .cmx/.o -> .cmxs *)
-let share_preprocessor dc ~dir (name : BN.t) : Rule.t =
-  let {DC. ocamlflags; ocamloptflags; _} = dc in
-  let file suf = BN.suffixed ~dir name suf in
-  let cmx = file ".cmx" in
-  let o = file ".o" in
-  let cmxs = file ".cmxs" in
-  let must_be_sharable = true in
-  let flags = ocamlflags @ ocamloptflags in
-  let flags = if must_be_sharable then remove_nodynlink flags else flags in
-  simple_rule ~deps:[Dep.path cmx; Dep.path o] ~targets:[cmxs] ~action:(
-    Action.process ~dir ocamlopt_path
-      (flags @ ["-shared"; "-o"; basename cmxs; basename cmx])
-  )
-
-module Preprocessor_conf_interpret = struct
-
-  include Preprocessor_conf
-
-  let disabled_warnings t =
-    Compiler_config.disabled_warnings @ t.extra_disabled_warnings
-
-  let ocamlflags t =
-    ["-I"; "+compiler-libs"] @
-    Top.default_ocamlflags ~disabled_warnings:(disabled_warnings t)
-
-  let extend_dc t dc =
-    let ocamlflags = ocamlflags t in
-    {dc with DC.
-      ocamlflags;
-    }
-
-end
-
-let preprocessor_rules dc ~dir conf =
-  let wrapped = false in
-  let dc = Preprocessor_conf_interpret.extend_dc conf dc in
-  let libname = Preprocessor_conf.name conf in
-  let can_setup_inline_runners = false in
-  let preprocess_spec = Preprocessor_conf.preprocess conf in
-  let default_pp = Some camlp4orf_path in
-  let name = BN.of_libname libname in
-  let pp_style = unstage (lookup_pp dc ~default_pp ~preprocess_spec) name in
-  let {DC.impl_is_buildable; intf_is_buildable;_} = dc in
-  let exists_ml = impl_is_buildable name in
-  let exists_mli = intf_is_buildable name in
-  let must_be_sharable = true in
-  let mc = {MC.
-    dc;
-    dir;
-    libname;
-    can_setup_inline_runners;
-    pp_style;
-    preprocessor_deps = [];
-    exists_ml;
-    exists_mli;
-    wrapped;
-    must_be_sharable;
-    findlib_include_flags = Findlib.Query.dummy []
-  }
-  in
-  assert (BN.is_lib name ~libname);
-  let actual_modules = lazy (BN.Set.of_list (dc.impls @ dc.intfs)) in
-  let default_rule =
-    let suffixes = [".cmi";".cmo"] in
-    Rule.default ~dir (
-      List.map suffixes ~f:(fun suf ->
-        Dep.path (BN.suffixed ~dir name suf))
-    )
-  in
-  List.concat [
-    [gen_interface_deps_from_objinfo dc ~dir ~wrapped ~libname
-       ~libraries_written_by_user:(Libmap.resolve_libdep_names_exn dc.libmap conf.libraries)];
-    [Lib_modules.rule ~dir ~libname Lib_modules.empty];
-    [gen_cmideps dc name];
-    [
-      gen_dfile ML ~disallowed_module_dep:(fun _ -> None) mc ~name ~actual_modules;
-      stub_names_rule ~stub_names:[] ~dir ~libname;
-      byte_compile_ml mc ~name;
-      native_compile_ml mc ~name ;
-      share_preprocessor dc ~dir name;
-      default_rule;
-    ];
-    generate_pp mc ~kind:ML ~name;
-    [infer_mli_auto mc ~name];
-    if exists_mli then ([
-      gen_dfile MLI ~disallowed_module_dep:(fun _ -> None) mc ~name ~actual_modules;
-      compile_mli mc ~name;
-    ] @ generate_pp mc ~kind:MLI ~name)
-    else [];
-  ]
-
-(*----------------------------------------------------------------------
  pack ordering
 ----------------------------------------------------------------------*)
 
@@ -3236,7 +3035,7 @@ let library_module_order ~dir ~impls ~intfs ~libname =
   let target = pack_order_file ~dir ~libname in
   Rule.create ~targets:[target] (
     Ordering.pack ~module_and_dfiles ~target *>>| fun sorted_modules ->
-    write_string_action (String.concat ~sep:" " (List.map sorted_modules ~f:BN.to_string))
+    Action.write_string (String.concat ~sep:" " (List.map sorted_modules ~f:BN.to_string))
       ~target
   )
 
@@ -3325,7 +3124,7 @@ let hg_version_out_rule =
         ))
         *>>| String.concat ~sep:"\n"
     end
-    *>>| write_string_action ~target:hg_version_out)
+    *>>| Action.write_string ~target:hg_version_out)
 
 let hg_version_base ~base = base ^ ".hg_version"
 
@@ -3610,28 +3409,6 @@ let get_libs_for_exe libmap ~link_libdeps_of ~libs_for_plugins ~force_link =
                                         ~f:Lib_dep.of_lib_in_the_tree)
 ;;
 
-
-module Js_of_ocaml_jsdeps = struct
-
-  let rule ~dir libname files =
-    let target = LN.suffixed ~dir libname Js_of_ocaml.jsdeps_suf in
-    let files = List.map files ~f:Path.to_string in
-    write_string_rule ~target (String.concat ~sep:" " files)
-
-  let all_deps_for_libs ~dc (libs : Lib_dep.t list) : Path.t list Dep.t =
-    Dep.List.concat_map libs ~f:(function
-      | From_compiler_distribution l ->
-        Js_of_ocaml.runtime_files_for_lib_in_compiler_distribution ~artifacts:dc.DC.artifacts l
-        |> Dep.all
-      | Findlib_package _ -> Dep.return []
-      | In_the_tree lib ->
-        let path =
-          LL.path_to_ocaml_artifact ~lib_in_the_tree:lib.name ~suf:Js_of_ocaml.jsdeps_suf
-        in
-        file_words path *>>| List.map ~f:Path.root_relative
-    )
-end
-
 let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       ~more_deps
       ~link_flags
@@ -3773,104 +3550,39 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
 
   let js_of_ocaml_rules =
     match Mode.which, js_of_ocaml with
-    | `Byte, Some { Js_of_ocaml_conf.flags; javascript_files } when javascript_enabled ->
-      let target_js = suffixed ~dir exe Js_of_ocaml.exe_suf in
+    | `Byte, Some { Js_of_ocaml_conf.flags; javascript_files; toplevel} when javascript_enabled ->
       let javascript_files = List.map ~f:(Path.relative_or_absolute ~dir) javascript_files in
-      let findlib_flags_query =
-        Findlib.javascript_linker_option (module Mode) ~dir ~exe libs_maybe_forced_dep
-      in
-      let js_files : Path.t list Dep.t =
-        libs_maybe_forced_dep *>>= fun libs_maybe_forced ->
-        Js_of_ocaml_jsdeps.all_deps_for_libs ~dc libs_maybe_forced
-        *>>| fun js_files_from_libs ->
-        js_files_from_libs @ javascript_files
-      in
       let hg_version =
         if suppress_version_util
         then None
         else Some hg_version_out
       in
       let build_info =
-        (* Don't include build_info with separate_compilation.
-           It otherwise forces the javascript runtime to be
-           rebuilt every time and adds undesirable delays to the
-           compilation loop. *)
-        if suppress_build_info || javascript_separate_compilation
+        if suppress_build_info
         then None
         else Some (relative ~dir (build_info_base ~base:(exe ^ Mode.exe) ^ ".sexp"))
       in
-      let flags =
-        if test_or_bench
-        then flags
-        else [ "--setenv"; "FORCE_DROP_INLINE_TEST=true"
-             ; "--setenv"; "FORCE_DROP_BENCH=true" ]
-             @ flags
+      let toplevel = match toplevel with
+        | [] -> None
+        | _ :: _ -> Some (Libmap.resolve_libdep_names_exn dc.libmap toplevel)
       in
-      let runtime_js = suffixed ~dir exe Js_of_ocaml.runtime_suf in
-      let findlib_flags = Findlib.Query.result findlib_flags_query in
-      let bc_dot_js_rule =
-        if not javascript_separate_compilation
-        then begin
-          let bytecode_exe = suffixed ~dir exe Mode.exe in
-          Js_of_ocaml.rule
-            ~artifacts:dc.artifacts
-            ~sourcemap:javascript_sourcemap
-            ~devel:for_javascript_development
-            ~build_info ~hg_version ~dir
-            ~flags ~findlib_flags
-            ~js_files ~src:bytecode_exe ~target:target_js
-        end else begin
-          Rule.create ~targets:[target_js] (
-            let findlib_archives =
-              Findlib.archives_full_path (module Mode) ~dir ~exe libs_maybe_forced_dep
-            in
-            libs_maybe_forced_dep
-            *>>= fun libs_maybe_forced ->
-            compute_objs
-            *>>= fun objs ->
-            Findlib.Query.result findlib_archives
-            *>>= fun archives_list ->
-            Js_of_ocaml.from_external_archives
-              ~ocaml_where:ocaml_where_path
-              (List.map ~f:Path.absolute archives_list)
-            *>>= fun js_archives_list ->
-            let sub_cmos_in_correct_order =
-              List.map objs ~f:(fun (obj_dir, base) ->
-                Path.relative ~dir:obj_dir (base ^ Js_of_ocaml.cmo_suf)) in
-            let libs_cma_js =
-              Js_of_ocaml.stdlib_from_compiler_distribution ::
-              List.concat_map libs_maybe_forced ~f:(fun lib_dep ->
-                match lib_dep with
-                | In_the_tree lib ->
-                  [ LL.path_to_ocaml_artifact ~lib_in_the_tree:lib.name ~suf:Js_of_ocaml.cma_suf ]
-                | From_compiler_distribution dst ->
-                  [ Js_of_ocaml.from_compiler_distribution dst ]
-                | Findlib_package _pkg -> []
-              )
-            in
-            let all_files =
-              List.concat
-                [ [ runtime_js ]
-                ; js_archives_list
-                ; libs_cma_js
-                ; sub_cmos_in_correct_order
-                ]
-            in
-            Js_of_ocaml.link_js_files
-              ~artifacts:dc.artifacts
-              ~sourcemap:javascript_sourcemap
-              ~dir ~files:all_files ~target:target_js
-          )
-        end
-      in
-      Findlib.Query.rules findlib_flags_query @
-      [ bc_dot_js_rule
-      ; Js_of_ocaml.rule_for_standalone_runtime
-          ~artifacts:dc.artifacts
-          ~sourcemap:javascript_sourcemap
-          ~devel:for_javascript_development
-          ~findlib_flags
-          ~build_info ~hg_version ~dir ~flags ~js_files ~target:runtime_js ]
+      Js_of_ocaml.rules_for_executable
+        ~artifacts:dc.DC.artifacts
+        ~sourcemap:javascript_sourcemap
+        ~dir
+        ~js_files: javascript_files
+        ~ocaml_where:ocaml_where_path
+        ~libs_dep:libs_maybe_forced_dep
+        ~compute_objs
+        ~toplevel
+        ~hg_version
+        ~build_info
+        ~separate_compilation:javascript_separate_compilation
+        ~devel:for_javascript_development
+        ~exe
+        ~drop_test_and_bench:(not test_or_bench)
+        ~path_to_ocaml_artifact:LL.path_to_ocaml_artifact
+        ~flags
     | (`Byte | `Native), _ -> []
   in
 
@@ -4340,8 +4052,6 @@ let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t
  embedding for ocaml plugin
 ----------------------------------------------------------------------*)
 
-let time_limit = relative ~dir:Config.script_dir "time_limit"
-
 let stdlib_cmis () =
   (* We don't force the stdlib to be linked, so potentially plugins could build
      but not dynlink. We don't expect people to call the stdlib though, but rather
@@ -4369,36 +4079,14 @@ let embed_rules dc ~dir conf =
   in
   let {Embed_conf. names; libraries; cmis; pps; code_style} = conf in
   let ppx_exe = ppx_executable pps in
-  let camlp4o = Named_artifact.path dc.artifacts camlp4o in
   List.concat_map names ~f:(fun prog ->
     let plugin_name = prog ^ ".ocaml_plugin" in
-    let camlp4_spec_and_paths camlp4o_path =
-      pps_to_camlp4_libs dc.libmap pps *>>| fun camlp4_pps ->
-      let camlp4_pps =
-        List.filter_map camlp4_pps ~f:(function
-          | In_the_tree { name; _ } ->
-            Some (LL.path_to_ocaml_artifact ~lib_in_the_tree:name ~suf:".cmxs")
-          | _ -> None)
-      in
-      match camlp4_pps with
-      | [] -> [], []
-      | _::_ ->
-        List.concat
-          [ [ "-pp" ; reach_from ~dir camlp4o_path ]
-          ; List.concat_map camlp4_pps ~f:(fun pp -> [ "-pa-cmxs"; reach_from ~dir pp ])],
-        camlp4o_path :: camlp4_pps
-    in
-    let preprocessing_spec_paths =
+    let preprocessing_spec, preprocessing_dep_paths =
       let ppx_spec = [ "-ppx"; reach_from ~dir ppx_exe ] in
       let ppx_dep_paths = [ppx_exe] in
       match code_style with
-      | No_preprocessing -> Dep.return ([], [])
-      | Ppx -> Dep.return (ppx_spec, ppx_dep_paths)
-      | Bilingual ->
-        camlp4o *>>= fun camlp4o_path ->
-        camlp4_spec_and_paths camlp4o_path
-        *>>| fun (camlp4_spec, camlp4_dep_paths) ->
-        camlp4_spec @ ppx_spec, camlp4_dep_paths @ ppx_dep_paths
+      | No_preprocessing -> ([], [])
+      | Ppx -> (ppx_spec, ppx_dep_paths)
     in
     let libraries =
       Libmap.resolve_libdep_names_exn dc.libmap libraries
@@ -4423,10 +4111,8 @@ let embed_rules dc ~dir conf =
            *>>| fun library_cmis ->
            local_cmis @ library_cmis)
         *>>= fun (stdlib_cmis, cmis) ->
-        Dep.both
-          (Named_artifact.path dc.artifacts embedder)
-          preprocessing_spec_paths
-        *>>= fun (embedder, (preprocessing_spec, preprocessing_dep_paths)) ->
+        Named_artifact.path dc.artifacts embedder
+        *>>= fun embedder ->
         let dep_paths = cmis @ preprocessing_dep_paths @ [ time_limit; embedder ] in
         Dep.all_unit (List.map ~f:Dep.path dep_paths) *>>| fun () ->
         (* Be careful here: there is a limit of MAX_ARG_STRLEN (130kB)  on any argument
@@ -4487,10 +4173,13 @@ let jane_script_rules dc
   in
   let dep_for_libraries =
     all_libraries *>>= fun all_libraries ->
-    (* Don't care about the cmx files. *)
+    (* We don't really care about the cmx files, however jane-script will read them if
+       they are present so to ensure things are deterministic we depend on them anyway.
+       When the compiler adds support for passing files directly to -I we can remove the
+       cmx files from this list. *)
     Dep.all_unit (LL.dep_on_ocaml_artifacts
                     (List.map all_libraries ~f:Lib_dep.of_lib_in_the_tree)
-                    ~suffixes:[".cmi"; ".cmxs"])
+                    ~suffixes:(".cmxs" :: cmi_maybe_cmx))
   in
   let cfg_target = Path.relative ~dir "jane-script.cfg" in
   let cfg_rule =
@@ -4570,7 +4259,7 @@ let inline_tests_script_rule ~dir ~libname ~runtime_environment ~script:target ~
         command (inline_tests_args ~runtime_environment ~libname ~flags)
   in
   (* We [export TZ] so that tests do not depend on the local timezone. *)
-  write_string_rule ~chmod_x:() ~target:(relative ~dir target) (
+  Rule.write_string ~chmod_x:() ~target:(relative ~dir target) (
 {|#!/bin/sh
 # This file was generated by jenga
 cd "$(dirname "$(readlink -f "$0")")"
@@ -4584,7 +4273,7 @@ let inline_tests_html_rule ~dir ~libname ~html ~flags =
     ["./" ^ exe] @
     inline_tests_args ~runtime_environment:`Javascript ~libname ~flags:("-verbose"::flags)
   in
-  write_string_rule ~chmod_x:() ~target:(relative ~dir html)
+  Rule.write_string ~chmod_x:() ~target:(relative ~dir html)
     (Js_of_ocaml.gen_html_for_inline_tests ~libname ~argv ~drop_test ~exe)
 ;;
 
@@ -4603,14 +4292,14 @@ let inline_bench_script_rule ~dir ~libname =
            (root_relative
              "lib/core_bench/inline_benchmarks_runner_lib_internal/etc/config.sexp"))
   in
-  write_string_rule ~chmod_x:() ~target:(relative ~dir "inline_benchmarks_runner") (
+  Rule.write_string ~chmod_x:() ~target:(relative ~dir "inline_benchmarks_runner") (
 {|#!/bin/sh
 # This file was generated by jenga
 cd "$(dirname "$(readlink -f "$0")")"
 |} ^ run)
 ;;
 
-let run_inline_action ~dir ~user_deps ~exe_deps ~flags ~runtime_deps filename =
+let run_inline_action ~dir ~user_deps ~exe_deps ~flags ~runtime_deps ~sandbox filename =
   let sources = List.map ~f:(relative ~dir) (filename :: exe_deps) in
   (Dep.all_unit (List.map (time_limit :: sources) ~f:Dep.path
                  @ runtime_deps
@@ -4625,7 +4314,7 @@ let run_inline_action ~dir ~user_deps ~exe_deps ~flags ~runtime_deps filename =
      @ (if inline_test_color    then [] else ["-no-color"])
      @ (if inline_test_in_place then ["-in-place"] else [])
    in
-   Action.process ~dir (reach_from ~dir time_limit) args)
+   Action.process ~sandbox ~dir (reach_from ~dir time_limit) args)
 
 let all_whitespace s = String.for_all s ~f:Char.is_whitespace
 
@@ -4668,6 +4357,7 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
   let exe = "inline_tests_runner" in
   let exe_js = exe ^ "_js" in
   let html = exe ^ ".html" in
+  let sandbox = if sandbox_rules then user_config.sandbox else Sandbox.default in
   let if_expect_tests value f =
     has_expect_tests ~dir
     *>>= function
@@ -4770,6 +4460,7 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
                      ~user_deps:[]
                      ~runtime_deps:[]
                      ~flags:["-list-partitions"]
+                     ~sandbox:Sandbox.default
                   )
                 *>>= fun output ->
                 let partitions = String.split_lines output in
@@ -4783,6 +4474,7 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
                           then [ Dep.path (relative ~dir source) ]
                           else [])
                        ~flags:["-partition"; p]
+                       ~sandbox
                     )))
               in
               Dep.all_unit
@@ -4856,7 +4548,6 @@ let inline_bench_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree =
 let ocaml_libraries : [< Jbuild.t ] -> _ = function
   | `ocamllex _ -> []
   | `ocamlyacc _ -> []
-  | `preprocessor x -> Preprocessor_conf.libraries x
   | `library x -> Library_conf.libraries x
   | `executables x -> Executables_conf_interpret.libraries x
   | `embed _ -> []
@@ -4865,14 +4556,13 @@ let ocaml_libraries : [< Jbuild.t ] -> _ = function
   | `rule _ -> []
   | `alias _ -> []
   | `no_utop -> []
-  | `requires_camlp4 -> []
   | `unified_tests _ -> []
   | `toplevel_expect_tests x -> Toplevel_expect_tests_interpret.libraries x
   | `public_repo _ -> []
   | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
-  | `install _ -> []
+  | `public_release _ -> []
 ;;
 
 let resolved_ocaml_libraries (dc : DC.t) jbuild =
@@ -4881,7 +4571,6 @@ let resolved_ocaml_libraries (dc : DC.t) jbuild =
 let xlibnames : Jbuild.t -> _ = function
   | `ocamllex _ -> []
   | `ocamlyacc _ -> []
-  | `preprocessor x -> [Preprocessor_conf.name x]
   | `library x -> [Library_conf.name x]
   | `executables { Executables_conf_interpret.names; _ } -> [fake_libname_of_exes names]
   | `embed _ -> []
@@ -4890,20 +4579,18 @@ let xlibnames : Jbuild.t -> _ = function
   | `rule _ -> []
   | `alias _ -> []
   | `no_utop -> []
-  | `requires_camlp4 -> []
   | `unified_tests _ -> []
   | `toplevel_expect_tests _ -> []
   | `public_repo _ -> []
   | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
-  | `install _ -> []
+  | `public_release _ -> []
 ;;
 
 let extra_disabled_warnings : Jbuild.t -> _ = function
   | `ocamllex _ -> []
   | `ocamlyacc _ -> []
-  | `preprocessor x -> x.Preprocessor_conf.extra_disabled_warnings
   | `library x -> x.Library_conf.extra_disabled_warnings
   | `executables x -> x.Executables_conf_interpret.extra_disabled_warnings
   | `embed _ -> []
@@ -4912,14 +4599,13 @@ let extra_disabled_warnings : Jbuild.t -> _ = function
   | `rule _ -> []
   | `alias _ -> []
   | `no_utop -> []
-  | `requires_camlp4 -> []
   | `unified_tests _ -> []
   | `toplevel_expect_tests _ -> []
   | `public_repo _ -> []
   | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
-  | `install _ -> []
+  | `public_release _ -> []
 ;;
 
 let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
@@ -4930,7 +4616,6 @@ let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
       | _ -> [])
   in
   match jbuild_item with
-  | `preprocessor x -> of_specs x.Preprocessor_conf.preprocess
   | `library x -> of_specs x.Library_conf.preprocess
   | `executables x -> of_specs x.Executables_conf.preprocess
   | `ocamllex _
@@ -4941,14 +4626,13 @@ let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
   | `rule _
   | `alias _
   | `no_utop
-  | `requires_camlp4
   | `unified_tests _
   | `toplevel_expect_tests _
   | `public_repo _
   | `html _
   | `provides _
   | `enforce_style _
-  | `install _
+  | `public_release _
     -> []
 
 let generate_dep_rules (dc : DC.t) ~dir jbuilds =
@@ -5015,7 +4699,6 @@ let merlin_ppx_directives ~dir (dc : DC.t) (jbuilds : Jbuild_types.Jbuild.t list
         (match jbuild_item with
          | `library l -> preprocess_spec l.preprocess
          | `executables e -> preprocess_spec e.preprocess
-         | `preprocessor p -> preprocess_spec p.preprocess
          | _ -> `No_code))
   in
   match approx with
@@ -5053,19 +4736,8 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
   (* don't create .merlin files in all the directories when we don't need them *)
   if List.is_empty dc.DC.xlibnames && Path.(<>) dir Path.the_root then [] else [
     Rule.create ~targets:[target] (
-      let preprocessor_directives =
-        if List.exists jbuilds ~f:(function
-            | `requires_camlp4 -> true
-            | _ -> false
-        ) then Dep.return [
-          "EXT here";
-          "EXT ounit";
-          "EXT custom_printf";
-        ] else
-          merlin_ppx_directives ~dir dc jbuilds
-      in
       merlin_1step_libs dc ~dir *>>= fun libs ->
-      preprocessor_directives *>>= fun preprocessor_directives ->
+      merlin_ppx_directives ~dir dc jbuilds *>>= fun preprocessor_directives ->
       let dot_merlin_contents =
         String.concat ~sep:"\n" (
           ("STDLIB " ^ ocaml_where)
@@ -5121,7 +4793,7 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
         )
       in
       Dep.all_unit dependencies_dot_merlins *>>| fun () ->
-      write_string_action dot_merlin_contents ~target
+      Action.write_string dot_merlin_contents ~target
     );
     Rule.alias (Alias.lib_artifacts ~dir) [Dep.path target];
     Rule.alias (Alias.runtest ~dir) [Dep.path target];
@@ -5166,7 +4838,6 @@ let library_rules_javascript (dc : DC.t) ~dir ~js_of_ocaml ~libname =
   match js_of_ocaml with
   | None -> []
   | Some js_of_ocaml ->
-    let { Js_of_ocaml_conf.javascript_files; flags; _ } = js_of_ocaml in
     let check_dependencies =
       Rule.alias (Alias.default ~dir) [
         (Libmap.load_lib_deps dc.libmap (LN.suffixed ~dir libname ".libdeps")
@@ -5189,21 +4860,22 @@ let library_rules_javascript (dc : DC.t) ~dir ~js_of_ocaml ~libname =
       ]
     in
     let javascript_files_dep =
-      let files = List.map javascript_files ~f:(Path.relative_or_absolute ~dir) in
-      Js_of_ocaml_jsdeps.rule ~dir libname files
+      let files =
+        List.map ~f:(Path.relative_or_absolute ~dir)
+          js_of_ocaml.Js_of_ocaml_conf.javascript_files
+      in
+      Js_of_ocaml.rule_for_library_jsdeps ~dir libname files
     in
     let js_compile_cma =
       let cma_without_suf = LN.to_string libname in
       let src    = Path.relative ~dir (cma_without_suf ^ ".cma") in
       let target = Path.relative ~dir (cma_without_suf ^ Js_of_ocaml.cma_suf) in
-      let js_files = Dep.return [] in
-      let findlib_flags = Dep.return [] in
-      Js_of_ocaml.rule
+      Js_of_ocaml.rule_for_compilation_unit
         ~artifacts:dc.artifacts
         ~sourcemap:javascript_sourcemap
         ~devel:for_javascript_development
-        ~build_info:None ~hg_version:None ~js_files ~dir
-        ~flags ~findlib_flags
+        ~dir
+        ~flags:js_of_ocaml.Js_of_ocaml_conf.flags
         ~src ~target
     in
     [ check_dependencies; javascript_files_dep; js_compile_cma ]
@@ -5454,7 +5126,6 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
   List.concat_map jbuilds ~f:(fun (j : Jbuild_types.Jbuild.t) ->
     match j with
     | `ocamllex _ | `ocamlyacc _ | `rule _ | `provides _ -> []
-    | `preprocessor conf -> preprocessor_rules dc ~dir conf
     | `library conf -> library_rules dc ~dir conf
     | `executables conf -> executables_rules dc ~dir conf
     | `embed conf -> embed_rules dc ~dir conf
@@ -5462,7 +5133,6 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
     | `compile_c conf -> user_configured_compile_c_rules ~dir conf
     | `alias conf -> [alias_conf_to_rule ~dir ~artifacts:dc.artifacts conf]
     | `no_utop -> []
-    | `requires_camlp4 -> []
     | `unified_tests conf ->
       Js_unified_tests.rules ~dir
         { target = conf.target
@@ -5474,13 +5144,14 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
     | `public_repo conf -> Public_release.rules ~artifacts:dc.artifacts ~dir conf
     | `html conf -> Html.rules ~dir conf
     | `enforce_style conf -> enforce_style ~dir conf
-    | `install _ -> []
+    | `public_release _ -> []
   )
 
 let transitive_runtest (dc : DC.t) ~dir jbuilds =
   let one_step_libdeps =
     Dep.List.concat_map jbuilds ~f:(fun jbuild ->
-      transitive_ppx_runtime_libraries dc.libmap (pps_of_jbuild jbuild) ~inside_base:false
+      let inside_base = List.exists (xlibnames jbuild) ~f:inside_base in
+      transitive_ppx_runtime_libraries dc.libmap (pps_of_jbuild jbuild) ~inside_base
       *>>| fun rt_libs ->
       let user_libraries = resolved_ocaml_libraries dc jbuild in
       rt_libs @ user_libraries)
@@ -5510,7 +5181,6 @@ let rules_without_directory_context ~dir jbuilds artifacts =
        | `ocamllex l -> List.map l ~f:(ocamllex_rule ~dir)
        | `ocamlyacc l -> List.map l ~f:(ocamlyacc_rule ~dir)
        | `rule conf -> [rule_conf_to_rule ~dir artifacts conf]
-       | `preprocessor _
        | `library _
        | `executables _
        | `embed _
@@ -5518,14 +5188,13 @@ let rules_without_directory_context ~dir jbuilds artifacts =
        | `compile_c _
        | `alias _
        | `no_utop
-       | `requires_camlp4
        | `unified_tests _
        | `toplevel_expect_tests _
        | `public_repo _
        | `html _
        | `provides _
        | `enforce_style _
-       | `install _
+       | `public_release _
          -> []))
 ;;
 
@@ -5560,37 +5229,22 @@ end = struct
     [
       Rule.create ~targets:[artifact_sexp_path] (
         compute () *>>| fun t ->
-        write_string_action (Sexp.to_string_hum (sexp_of_t t)) ~target:artifact_sexp_path
+        Action.write_string (Sexp.to_string_hum (sexp_of_t t)) ~target:artifact_sexp_path
       );
     ]
 
   let get =
-    let cache =
-      ref ("", Ok (Named_artifact.Store.create
-                     ~artifacts:[]
-                     ~findlib_packages:Findlib_package_name.Map.empty))
-    in
-    Dep.both
-      (Dep.contents_cutoff artifact_sexp_path)
-      (Findlib.packages)
-    *>>| fun (contents, findlib_packages)  ->
-    (* This test is expected to work because jenga shares the Dep.contents. *)
-    if phys_equal contents (fst !cache)
-    then ok_exn (snd !cache)
-    else begin
-      let res =
-        Or_error.try_with (fun () ->
-          let artifacts =
-            Sexp.of_string_conv_exn ~source:(File artifact_sexp_path)
-              contents t_of_sexp
-          in
-          Named_artifact.Store.create ~findlib_packages ~artifacts
-        )
+    Dep.memoize ~name:"reading artifacts-store" (
+      Dep.both
+        (Dep.contents_cutoff artifact_sexp_path)
+        (Findlib.packages)
+      *>>| fun (contents, findlib_packages)  ->
+      let artifacts =
+        Sexp.of_string_conv_exn ~source:(File artifact_sexp_path)
+          contents t_of_sexp
       in
-      cache := (contents, res);
-      ok_exn res
-    end
-
+      Named_artifact.Store.create ~findlib_packages ~artifacts
+    )
 end
 
 (*----------------------------------------------------------------------
@@ -5632,37 +5286,24 @@ end = struct
     [
       Rule.create ~targets:[libmap_sexp_path] (
         Dep.both (Dep.path stable_libmap_sexp_path) (compute ()) *>>| fun ((), t) ->
-        write_string_action (Sexp.to_string_hum (sexp_of_t t)) ~target:libmap_sexp_path
+        Action.write_string (Sexp.to_string_hum (sexp_of_t t)) ~target:libmap_sexp_path
       );
       Rule.create ~targets:[stable_libmap_sexp_path] (
         compute () *>>| fun t ->
-        write_string_action (Sexp.to_string_hum (stable_sexp_of_t t)) ~target:stable_libmap_sexp_path
+        Action.write_string (Sexp.to_string_hum (stable_sexp_of_t t)) ~target:stable_libmap_sexp_path
       );
     ]
 
   let get =
-    let cache =
-      ref ("", Or_error.try_with
-                 (fun () -> Libmap.create_exn ([], Findlib_package_name.Set.empty)))
-    in
-    Dep.contents_cutoff libmap_sexp_path
-    *>>| fun contents ->
-    (* This test is expected to work because jenga shares the Dep.contents. *)
-    if phys_equal contents (fst !cache)
-    then ok_exn (snd !cache)
-    else begin
-      let res =
-        Or_error.try_with (fun () ->
-          let t =
-            Sexp.of_string_conv_exn ~source:(File libmap_sexp_path)
-              contents t_of_sexp
-          in
-          Libmap.create_exn t)
+    Dep.memoize ~name:"reading libmap" (
+      Dep.contents_cutoff libmap_sexp_path
+      *>>| fun contents ->
+      let t =
+        Sexp.of_string_conv_exn ~source:(File libmap_sexp_path)
+          contents t_of_sexp
       in
-      cache := (contents, res);
-      ok_exn res
-    end
-
+      Libmap.create_exn t
+    )
 end
 
 let setup_liblinks_dir ~dir =
@@ -5730,14 +5371,17 @@ let filter_drop ~suffix xs =
    a way of checking that any executables building against base would be able to build
    only against base. This is a bit approximate because we could miss dependencies of link
    time dependencies for instance, but that has been working just fine in practice. *)
-let self_contained_projections ~dir alias projections =
+let self_contained_projections =
   let (module Mode) = Ocaml_mode.native in
-  Rule.alias (Alias.create ~dir alias) [
-    let libs_by_dir =
+  let libs_by_dir =
+    Dep.memoize ~name:"libs-by-dir" (
       Libmap_sexp.get *>>| fun libmap ->
       let f = Staged.unstage (Libmap.reverse_look libmap) in
       fun dir -> List.map (f dir) ~f:(fun lib -> Lib_in_the_tree.suffixed lib Mode.cmxa)
-    in
+    )
+  in
+  fun ~dir alias projections ->
+  Rule.alias (Alias.create ~dir alias) [
     Fe.Projections_check.libs_in_projections_are_self_contained ~projections ~libs_by_dir
     *>>| Option.iter ~f:(fun error_msg ->
       let source = User_or_gen_config.source_file ~dir in
@@ -5805,17 +5449,10 @@ let create_directory_context ~dir jbuilds libmap artifacts k =
     in
     let impl_is_buildable = mem_of_list impls in
     let intf_is_buildable = mem_of_list intfs in
-    (* select code_style uniformly for a directory *)
-    let code_style =
-      if List.exists jbuilds ~f:(function `requires_camlp4 -> true | _ -> false)
-      then Requires_camlp4
-      else Switched_to_ppx_style
-    in
     let enforce_style =
       List.exists jbuilds ~f:(function `enforce_style _ -> true | _ -> false)
     in
     k {DC.
-      code_style;
       dir;
       link_flags;
       merlinflags;
@@ -6046,9 +5683,9 @@ let scheme ~dir =
       end
     ]
 
-let ocaml_bin_file = ".omake-ocaml-bin"
-let ocaml_bin_file_path = root_relative ocaml_bin_file
-let ocaml_bin_file_rule = write_string_rule ocaml_bin ~target:ocaml_bin_file_path
+let ocaml_bin_file ~prefix = "." ^ prefix ^ "ocaml-bin"
+let ocaml_bin_file_path ~prefix = root_relative (ocaml_bin_file ~prefix)
+let ocaml_bin_file_rule ~prefix = Rule.write_string ocaml_bin ~target:(ocaml_bin_file_path ~prefix)
 
 (* Used to select which version of merlin will work on the tree. *)
 let ocaml_version_file ~suf = ".ocaml-major-version" ^ suf
@@ -6076,8 +5713,10 @@ let root_only_scheme =
   Scheme.all [
     Scheme.sources [ ocaml_version_file_source_path ];
     Scheme.rules [
-      ocaml_bin_file_rule;
-      alias_dot_filename_hack ~dir ocaml_bin_file;
+      ocaml_bin_file_rule ~prefix:"omake-";
+      alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"omake-");
+      ocaml_bin_file_rule ~prefix:"";
+      alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"");
       ocaml_version_file_rule;
       alias_dot_filename_hack ~dir (Path.basename ocaml_version_file_output_path);
     ]
@@ -6088,7 +5727,10 @@ let scheme ~dir =
   Scheme.all [
     (if Path.(=) dir Path.the_root then root_only_scheme else Scheme.empty);
     Scheme.dep (
-      Dep.all_unit [ Dep.path ocaml_bin_file_path; Dep.path ocaml_version_file_output_path ]
+      Dep.all_unit [ Dep.path (ocaml_bin_file_path ~prefix:"")
+                   ; Dep.path (ocaml_bin_file_path ~prefix:"omake-")
+                   ; Dep.path ocaml_version_file_output_path
+                   ]
       *>>| fun () ->
       scheme ~dir
     )

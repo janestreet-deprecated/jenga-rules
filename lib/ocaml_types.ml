@@ -116,6 +116,7 @@ end
 module From_compiler_distribution : sig
   type t [@@deriving sexp, compare, enumerate]
 
+  val equal : t -> t -> bool
   val to_string : t -> string
   val libdep_name : t -> Libdep_name.t
   val artifact_dir_relative_to_stdlib_dir : t -> string option
@@ -125,6 +126,12 @@ module From_compiler_distribution : sig
   val ocamlfind_package : t -> Findlib_package_name.t
   val cmis__partially_implemented : t -> stdlib_dir:Path.t -> Path.t list
   val lib_of_unit__partially_implemented : unit:string -> t option
+  val cma : t -> stdlib_dir:Path.t -> Path.t
+  val cmi : t -> stdlib_dir:Path.t -> unit:string -> Path.t
+
+  val stdlib : t
+  val ocamlcommon : t
+
 end = struct
   type t =
     | Bigarray
@@ -136,11 +143,11 @@ end = struct
     | Ocamltoplevel
     | Ocamlbytecomp
     | Ocamloptcomp
-    (* omitting stdlib *)
+    | Stdlib
     | Str
     | Threads
     | Unix
-  [@@deriving sexp, compare, enumerate]
+  [@@deriving sexp, compare, enumerate, variants]
 
   let to_string = function
     | Bigarray         -> "bigarray"
@@ -152,9 +159,12 @@ end = struct
     | Ocamltoplevel    -> "ocamltoplevel"
     | Ocamlbytecomp    -> "ocamlbytecomp"
     | Ocamloptcomp     -> "ocamloptcomp"
+    | Stdlib           -> "stdlib"
     | Str              -> "str"
     | Threads          -> "threads"
     | Unix             -> "unix"
+
+  let equal = [%compare.equal: t]
 
   let lib_of_unit__partially_implemented =
     let table = String.Table.create () in
@@ -169,6 +179,7 @@ end = struct
       ; Ocamlbytecomp    , []
       ; Ocamloptcomp     , []
       ; Str              , ["str"]
+      ; Stdlib           , []
       ; Threads          , ["thread";"mutex";"condition";"event";"threadUnix"]
       ; Unix             , ["unix";"unixLabels"]
       ]
@@ -183,17 +194,18 @@ end = struct
   let libdep_name t = Libdep_name.of_string (to_string t)
 
   let artifact_dir_relative_to_stdlib_dir = function
-    | Bigarray | Dynlink | Graphics | Nums | Str | Unix -> None
+    | Bigarray | Dynlink | Graphics | Nums | Str | Stdlib | Unix -> None
     | Threads -> Some "threads"
     | Ocamlcommon | Ocamlopttoplevel | Ocamltoplevel | Ocamlbytecomp | Ocamloptcomp ->
       Some "compiler-libs"
+
   let search_path_dir t =
     match artifact_dir_relative_to_stdlib_dir t with
     | None -> None
     | Some s -> Some ("+" ^ s)
 
   let transitive_deps = function
-    | Bigarray | Dynlink | Graphics | Nums | Str | Unix
+    | Bigarray | Dynlink | Graphics | Nums | Str | Stdlib | Unix
     | Ocamlcommon | Ocamlbytecomp | Ocamloptcomp -> []
     | Threads -> [ Unix ]
     | Ocamltoplevel -> [ Ocamlcommon ; Ocamlbytecomp ]
@@ -201,7 +213,7 @@ end = struct
 
   let supported_in_javascript = function
     | Ocamlcommon | Ocamlbytecomp | Ocamltoplevel
-    | Bigarray | Nums
+    | Bigarray | Nums | Stdlib
       -> true
     | Ocamloptcomp | Ocamlopttoplevel
     | Dynlink | Graphics | Str | Threads | Unix
@@ -221,6 +233,7 @@ end = struct
       | Ocamlbytecomp    -> "compiler-libs.bytecomp"
       | Ocamloptcomp     -> "compiler-libs.optcomp"
       | Str              -> "str"
+      | Stdlib           -> "stdlib"
       | Threads          -> "threads"
       | Unix             -> "unix"
     in
@@ -236,6 +249,18 @@ end = struct
     match t with
     | Str -> [Path.relative ~dir:stdlib_dir (dir_relative_to_stdlib_dir ^ "str.cmi")]
     | _ -> []
+
+  let artifact_path t ~stdlib_dir name =
+    let dir_relative_to_stdlib_dir =
+      match artifact_dir_relative_to_stdlib_dir t with
+      | None -> ""
+      | Some p -> p ^ "/"
+    in
+    Path.relative ~dir:stdlib_dir (dir_relative_to_stdlib_dir ^ name)
+
+  let cma t ~stdlib_dir = artifact_path t ~stdlib_dir (to_string t ^ ".cma")
+
+  let cmi t ~stdlib_dir ~unit = artifact_path t ~stdlib_dir (unit ^ ".cmi")
 end
 
 module Lib_dep : sig
