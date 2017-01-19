@@ -3317,7 +3317,6 @@ end = struct
     "libcom_err.so.2";
     "libdl.so.2";
     "libgcc_s.so.1";
-    "libgmp.so.3";
     "libjswrap.so.1";
     "libk5crypto.so.3";
     "libkeyutils.so.1";
@@ -3325,7 +3324,6 @@ end = struct
     "libkrb5support.so.0";
     "libm.so.6";
     "libnsl.so.1";
-    "libpcre.so.0";
     "libpthread.so.0";
     "libresolv.so.2";
     "librt.so.1";
@@ -3336,6 +3334,12 @@ end = struct
     "libz.so.1";
     "linux-gate.so.1"; (* [linux-vdso.so.1] may appear as [linux-gate.so.1] *)
     "linux-vdso.so.1";
+    (* CentOS 6 *)
+    "libgmp.so.3";
+    "libpcre.so.0";
+    (* CentOS 7 *)
+    "libgmp.so.10";
+    "libpcre.so.1";
   ]
 
   let standard =
