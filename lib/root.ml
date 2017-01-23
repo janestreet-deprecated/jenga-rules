@@ -5079,7 +5079,7 @@ let enforce_style ~dir ({ exceptions } : Enforce_style_conf.t) =
   let files_to_style = relative ~dir ".files-to-style" in
   let enforce_style_alias = Alias.create ~dir "enforce-style" in
   [ Rule.create ~targets:[ files_to_style ]
-      (Dep.glob_listing (Glob.create "*.{el,ml{,i}}" ~dir)
+      (Dep.glob_listing (Glob.create "*.{el,ml{,i,t}}" ~dir)
        *>>| fun all_styled_files ->
        let to_style =
          all_styled_files
