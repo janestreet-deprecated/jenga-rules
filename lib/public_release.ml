@@ -3,7 +3,13 @@ open Import
 open Jbuild_types
 open Ocaml_types
 
-let opam_switches = ["4.03.0"; "4.03.0+32bit"; "osx-4.03.0"]
+let opam_switches =
+  [ "4.03.0"
+  ; "4.03.0+32bit"
+  ; "osx-4.03.0"
+  ; "4.04.0"
+  ; "4.05.0"
+  ]
 
 module Make(Jenga_root : sig
     module Lib_modules : sig

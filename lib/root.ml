@@ -123,6 +123,7 @@ module Alias = struct
   let merlin ~dir = Alias.create ~dir "merlin"
   let unused_libs ~dir = Alias.create ~dir "unused-libs"
   let utop ~dir = Alias.create ~dir "utop"
+  let runtime_deps_of_tests ~dir = Alias.create ~dir "runtime-deps-of-tests"
   (* aliases not intended to be recursive.. *)
   let lib_artifacts ~dir = Alias.create ~dir "lib_artifacts"
   (* These aliases are used to group and share the dependencies on *.cmi or *.cmx for a
@@ -4414,37 +4415,45 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
           ~script:exe_js ~runtime_environment:`Javascript;
         inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
           ~script:exe ~runtime_environment:(if only_shared_object then `Emacs else `Exe) ]
-    ; (match alias_for_inline_runners ~dir ~skip_from_default with
-      | None -> []
-      | Some alias ->
-        [ Rule.alias alias [
-            sources_with_tests ~dir *>>= function
-            | None -> return ()
-            | Some { inline_test = (); expect_tests = _ } ->
-              if link_executables
-              && (should.build_native || should.build_javascript)
-              && not (Compiler_selection.m32 && only_shared_object) (* emacs is 64 bits *)
-              then begin
-                (* If building an inline test runner, also build its runtime dependencies so
-                   it's ready to be run manually. *)
-                let names =
-                  List.concat [
-                    if should.build_native
-                    then [exe; exe ^ exe_suf]
-                    else [];
-                    if should.build_javascript
-                    then [exe_js; exe ^ ".bc.js"]
-                    else [];
-                  ]
-                in
-                Dep.all_unit (
-                  List.map names ~f:(fun name -> Dep.path (relative ~dir name))
-                  @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
-                )
-              end
-              else return ()
-          ];
-        ])
+    ; (
+       let inline_test_exe_paths =
+         Dep.memoize ~name:"inline-test-exe-paths" (
+           sources_with_tests ~dir *>>| function
+           | None -> None
+           | Some { inline_test = (); expect_tests = _ } ->
+             if (should.build_native || should.build_javascript)
+             && not (Compiler_selection.m32 && only_shared_object) (* emacs is 64 bits *)
+             then
+               let names = List.concat [
+                 if should.build_native
+                 then [exe; exe ^ exe_suf]
+                 else [];
+                 if should.build_javascript
+                 then [exe_js; exe ^ ".bc.js"]
+                 else [];
+               ]
+               in
+               Some (List.map names ~f:(fun name -> Dep.path (relative ~dir name)))
+             else None
+         )
+       in
+       Rule.alias (Alias.runtime_deps_of_tests ~dir) [
+           inline_test_exe_paths *>>= function
+           | None -> return ()
+           | Some names ->
+             Dep.all_unit (names @ Dep_conf_interpret.list_to_depends ~dir user_config.deps)
+         ]
+       :: match alias_for_inline_runners ~dir ~skip_from_default with
+          | None -> []
+          | Some alias ->
+            if not link_executables
+            then []
+            else [ Rule.alias alias [
+                    inline_test_exe_paths *>>= function
+                    | None -> return ()
+                    | Some names -> Dep.all_unit names
+                  ] ]
+      )
     ; if (should.run_native || should.run_javascript)
       && not (Compiler_selection.m32 && only_shared_object)
       then
@@ -4711,6 +4720,8 @@ let merlin_ppx_directives ~dir (dc : DC.t) (jbuilds : Jbuild_types.Jbuild.t list
     Named_artifact.path dc.artifacts metaquot
     *>>| fun metaquot ->
     [ sprintf "FLG -ppx %s" (command_for_merlin [Path.to_absolute_string metaquot]) ]
+  | `Cant_express when String.(=) (Path.to_string dir) "external/migrate-parsetree/src" ->
+    Dep.return []
   | `Pps _ | `Cant_express as approx ->
     let pps, flags =
       match approx with
@@ -5568,18 +5579,19 @@ let rec under segment dir =
   ----------------------------------------------------------------------*)
 
 let recursive_alias_list = [
-  Alias.default;
-  Alias.runtest;
-  Alias.qtest;
-  Alias.pp;
-  Alias.libdeps;
-  Alias.merlin;
-  Alias.utop;
   Alias.c;
-  Alias.unused_libs;
-  Alias.save_benchmarks;
   Alias.create "empty";
   Alias.create "feature-subtree-build";
+  Alias.default;
+  Alias.libdeps;
+  Alias.merlin;
+  Alias.pp;
+  Alias.qtest;
+  Alias.runtest;
+  Alias.runtime_deps_of_tests;
+  Alias.save_benchmarks;
+  Alias.unused_libs;
+  Alias.utop;
   Odoc.alias;
 ] @ Lib_clients.aliases
 
