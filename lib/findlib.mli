@@ -25,6 +25,7 @@ end
 val include_flags
   :  dir:Path.t
   -> string
+  -> ?predicates:string list
   -> Lib_dep.t list Dep.t
   -> string list Query.t
 

@@ -193,7 +193,9 @@ let javascript_linker_option (module M : Ocaml_mode.S) ~dir ~exe deps =
   Query.create ~dir (exe ^ M.exe) deps ~format:"%o" ~suffix:javascript_linker_option_suffix
     ~predicates:["javascript"; "jsoo_noruntime"; M.which_str]
 
-let include_flags ~dir base lib_deps =
+let include_flags ~dir base ?(predicates=[]) lib_deps =
   Query.create ~dir base lib_deps ~format:"%d"
-    ~suffix:include_dirs_suffix ~process_output:(fun s ->
-      remove_dups_preserve_order s |> List.concat_map ~f:(fun s -> ["-I"; s]))
+    ~suffix:include_dirs_suffix ~predicates
+    ~process_output:(fun s ->
+      remove_dups_preserve_order s |> List.concat_map ~f:(fun s -> ["-I"; s])
+    )

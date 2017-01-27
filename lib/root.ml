@@ -2217,11 +2217,9 @@ let generate_ppx_exe_rules libmap ~dir ~link_flags =
     let ppx_driver_runner = ppx_driver_runner libmap in
     let libs = libs @ [ppx_driver_runner] in
     let lib_deps = libs_transitive_closure libmap libs in
-    let fl_archives =
-      Findlib.archives Ocaml_mode.native ~dir ~exe lib_deps
-        ~predicates:["custom_ppx"; "ppx_driver"]
-    in
-    let fl_include_flags = Findlib.include_flags ~dir exe lib_deps in
+    let predicates = ["custom_ppx"; "ppx_driver"] in
+    let fl_archives = Findlib.archives Ocaml_mode.native ~dir ~exe lib_deps ~predicates in
+    let fl_include_flags = Findlib.include_flags ~dir exe lib_deps ~predicates in
     Rule.create ~targets:[target] (
       lib_deps *>>= fun libs ->
       (* Make sure we do link ppx_driver_runner last, otherwise we have a problem. *)
@@ -5745,7 +5743,9 @@ let scheme ~dir =
     Scheme.dep (
       Dep.all_unit [ Dep.path (ocaml_bin_file_path ~prefix:"")
                    ; Dep.path (ocaml_bin_file_path ~prefix:"omake-")
-                   ; Dep.path ocaml_version_file_output_path
+                   ; if Config.public
+                     then Dep.return ()
+                     else Dep.path ocaml_version_file_output_path
                    ]
       *>>| fun () ->
       scheme ~dir
