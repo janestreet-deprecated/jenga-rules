@@ -33,13 +33,36 @@ module Lib_info = struct
     [@@deriving compare, sexp]
   end
 
+  (* A Jane Street library that is released *)
+  module Js_released = struct
+    type t =
+      { opam_package : string
+      ; (* None if the library is not installed by its package *)
+        public_name  : string sexp_option
+      }
+    [@@deriving compare, sexp]
+  end
+
+  (* An external library *)
+  module External = struct
+    type t =
+      { opam_package : string
+      ; public_name  : string
+      ; wrapper      : Wrapper.t sexp_option
+      }
+    [@@deriving compare, sexp]
+  end
+
   type t =
-    { internal     : bool
-    ; opam_package : string
-    ; public_name  : string sexp_option
-    ; wrapper      : Wrapper.t option
-    }
+    | Js_not_released (* A Jane Street library that is not released *)
+    | Js_released of Js_released.t
+    | External    of External.t
   [@@deriving compare, sexp]
+
+  let public_name = function
+    | Js_not_released -> None
+    | Js_released x   -> x.public_name
+    | External    x   -> Some x.public_name
 end
 
 module Package = struct

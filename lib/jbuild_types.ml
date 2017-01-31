@@ -187,6 +187,15 @@ module Lint_spec = struct
   type t = [ `pps of Pp_or_flag.t list ] [@@deriving of_sexp]
 end
 
+module Alias_basename = struct
+  type t = string [@@deriving of_sexp]
+  let t_of_sexp sexp =
+    let t = t_of_sexp sexp in
+    if String.(=) t "qtest"
+    then of_sexp_error "the qtest alias is deprecated, it won't get run" sexp
+    else t
+end
+
 module Artifact_name = Ocaml_types.Artifact_name
 module Libname = Ocaml_types.Libname
 module Libdep_name = Ocaml_types.Libdep_name
@@ -249,7 +258,7 @@ module Inline_tests = struct
     (** Flags to pass to the inline test runner *)
     flags : string sexp_list;
     (** The alias that runs the tests runners in *)
-    alias : string sexp_option;
+    alias : Alias_basename.t sexp_option;
     (** Should inline_tests_runner be built and run in native environment *)
     native     : build_and_run sexp_option;
     (** Should inline_tests_runner be built and run in javascript environment *)
@@ -324,7 +333,7 @@ end
 
 module Alias_conf = struct
   type t = {
-    name : string;
+    name : Alias_basename.t;
     deps : Dep_conf.t list;
     action : User_action.Unexpanded.t sexp_option;
     sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];

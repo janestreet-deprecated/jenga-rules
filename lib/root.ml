@@ -117,7 +117,6 @@ module Alias = struct
   let c ~dir = Alias.create ~dir "c"
   let default ~dir = Alias.create ~dir "DEFAULT"
   let runtest ~dir = Alias.create ~dir "runtest"
-  let qtest ~dir = Alias.create ~dir "qtest"
   let pp ~dir = Alias.create ~dir "pp"
   let libdeps ~dir = Alias.create ~dir "libdeps"
   let merlin ~dir = Alias.create ~dir "merlin"
@@ -3297,18 +3296,9 @@ let bench_macros = [letp ^ "bench"; letp ^ "bench_fun"; letp ^ "bench_module"]
 
 module Check_ldd_dependencies : sig
 
-  val check :
-    allowed:Ordered_set_lang.t
-    -> target:Path.t -> (Path.t -> Action.t Dep.t) -> Rule.t list
+  val check : allowed:Ordered_set_lang.t -> exe:Path.t -> unit Dep.t
 
 end = struct
-
-  let atomic_copy_action ~source ~target =
-    let dir = dirname target in
-    bashf ~dir
-      !"tmp=\"$(mktemp --tmpdir=./)\"; cp -p -- %{quote} \"$tmp\"; mv -- \"$tmp\" %{quote}"
-      (reach_from ~dir source)
-      (basename target)
 
   let standard = [
     "libc.so.6";
@@ -3347,39 +3337,29 @@ end = struct
 
   let dynamic_lib_deps_sh = relative ~dir:Config.script_dir "dynamic-lib-deps.sh"
 
-  let check ~allowed ~target mk_action =
+  let check ~allowed ~exe =
     let allowed = Ordered_set_lang.eval_with_standard allowed ~standard in
     let is_unexpected =
       let set = String.Hash_set.of_list allowed in
       fun name -> not (Hash_set.mem set name)
     in
-    let dir = dirname target in
-    let unchecked = suffixed ~dir (basename target) ".unchecked-do-not-deploy" in
-    [
-      Rule.create ~targets:[unchecked] (mk_action unchecked);
-      Rule.create ~targets:[target] (
-        (* The unchecked .exe is a dependency for the checking-action AND the cp/rm *)
-        Dep.path unchecked *>>= fun () ->
-        Dep.action_stdout (
-          Dep.all_unit [Dep.path dynamic_lib_deps_sh; Dep.path unchecked] *>>| fun () ->
-          Action.process ~dir:Path.the_root
-            (Path.to_string dynamic_lib_deps_sh)
-            [Path.to_string unchecked]
-        ) *>>| fun stdout ->
-        let actual = words_of_string stdout in
-        let unexpected = List.filter ~f:is_unexpected actual in
-        match unexpected with
-        | [] ->
-          atomic_copy_action ~source:unchecked ~target
-        | _ :: _ ->
-          failposf ~pos:(dummy_position (relative ~dir "jbuild"))
-            "%s has unexpected dynamic dependencies: %s\nAllowed: %s\nActual: %s"
-            (Path.basename target) (String.concat ~sep:" " unexpected)
-            (String.concat ~sep:" " allowed)
-            (String.concat ~sep:" " actual)
-            ()
-      );
-    ]
+    Dep.action_stdout (
+      Dep.all_unit [Dep.path dynamic_lib_deps_sh; Dep.path exe] *>>| fun () ->
+      Action.process ~dir:Path.the_root
+        (Path.to_string dynamic_lib_deps_sh)
+        [Path.to_string exe]
+    ) *>>| fun stdout ->
+    let actual = words_of_string stdout in
+    let unexpected = List.filter ~f:is_unexpected actual in
+    match unexpected with
+    | [] -> ()
+    | _ :: _ ->
+      failposf ~pos:(dummy_position (relative ~dir:(dirname exe) "jbuild"))
+        "%s has unexpected dynamic dependencies: %s\nAllowed: %s\nActual: %s"
+        (Path.basename exe) (String.concat ~sep:" " unexpected)
+        (String.concat ~sep:" " allowed)
+        (String.concat ~sep:" " actual)
+        ()
 
 end
 
@@ -3415,7 +3395,6 @@ let get_libs_for_exe libmap ~link_libdeps_of ~libs_for_plugins ~force_link =
 let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       ~more_deps
       ~link_flags
-      ~allowed_ldd_dependencies
       ~ocaml_plugin_handling
       ~link_libdeps_of
       ~suppress_build_info
@@ -3433,12 +3412,6 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
   in
   let hg_version_o = relative ~dir (hg_version_base ~base:(exe ^ Mode.exe) ^ ".o") in
   let build_info_o = relative ~dir (build_info_base ~base:(exe ^ Mode.exe) ^ ".o") in
-
-  let maybe_ldd_check_rules ~target mk_action =
-    match allowed_ldd_dependencies with
-    | None -> [Rule.create ~targets:[target] (mk_action target)] (* no check *)
-    | Some allowed -> Check_ldd_dependencies.check ~allowed ~target mk_action
-  in
 
   let libs_for_plugins, ocaml_plugin_deps, ocaml_plugin_flags =
     match ocaml_plugin_handling with
@@ -3463,9 +3436,9 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
     Findlib.include_flags ~dir (exe ^ Mode.exe) libs_maybe_forced_dep
   in
 
-  let exe_rules =
+  let exe_rule =
     let target = suffixed ~dir exe Mode.exe in
-    maybe_ldd_check_rules ~target (fun target ->
+    Rule.create ~targets:[target] (
       let exe_maybe_tmp = basename target in
       libs_maybe_forced_dep
       *>>= fun libs_maybe_forced ->
@@ -3606,7 +3579,7 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
     ])
   in
   List.concat [
-    exe_rules;
+    [ exe_rule ];
     js_of_ocaml_rules;
     List.concat_map ~f:Findlib.Query.rules
       [ findlib_archives
@@ -3701,12 +3674,12 @@ let link_executable (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir ~wrapped ~libn
   let (module Mode : Ocaml_mode.S) =
     replace_exe_suffix (module Mode) ~only_shared_object
   in
+  let exe = BN.to_string name in
   let link_rules =
     link (module Mode) (dc : DC.t) ~dir
         ~more_deps:[]
         ~link_flags
         ~build_libs_DEFAULT:true
-        ~allowed_ldd_dependencies
         ~ocaml_plugin_handling:(ocaml_plugin_handling dc ~dir name)
         ~suppress_build_info:false
         ~suppress_version_util:false
@@ -3716,10 +3689,21 @@ let link_executable (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir ~wrapped ~libn
            *>>| fun bns ->
            List.map (bns @ [name]) ~f:(fun name ->
              dir, PN.to_string (PN.of_barename ~wrapped ~libname name)))
-        ~exe:(BN.to_string name)
+        ~exe
         ~force_link:None
         ~test_or_bench:false
         ~js_of_ocaml
+  in
+  let ldd_check =
+    match Mode.which with
+    | `Byte -> []
+    | `Native ->
+      match allowed_ldd_dependencies with
+      | None -> []
+      | Some allowed ->
+        [ Rule.alias (Alias.default ~dir)
+            [Check_ldd_dependencies.check ~allowed ~exe:(suffixed ~dir exe Mode.exe)]
+        ]
   in
   let projections_check_rules =
     (* We only care about native code, since that's how we roll production executables.
@@ -3751,7 +3735,7 @@ let link_executable (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir ~wrapped ~libn
       in
       [rule]
   in
-  link_rules @ projections_check_rules
+  List.concat [ link_rules; projections_check_rules; ldd_check ]
 ;;
 
 let executables_rules (dc : DC.t) ~dir e_conf =
@@ -3961,7 +3945,6 @@ let toplevel_rules dc ~dir ~libname_for_libdeps ~(extra_lib : Lib_in_the_tree.t 
       ~more_deps:(Dep.path toplevel_info :: more_deps)
       ~link_flags:(["-linkall"; basename toplevel_info]
                    @ List.concat_map Toplevel.includes ~f:(fun dir -> ["-I"; dir]))
-      ~allowed_ldd_dependencies:None
       ~ocaml_plugin_handling:`Not_a_plugin
       ~link_libdeps_of:(
         Dep.List.concat [
@@ -4390,7 +4373,6 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
           ~build_libs_DEFAULT:true
           ~more_deps:[]
           ~link_flags:[]
-          ~allowed_ldd_dependencies:None
           ~ocaml_plugin_handling:`Not_a_plugin
           ~link_libdeps_of:
             (Dep.List.concat [
@@ -4521,7 +4503,6 @@ let inline_bench_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree =
         ~build_libs_DEFAULT:false
         ~link_flags:[]
         ~more_deps:[]
-        ~allowed_ldd_dependencies:None
         ~ocaml_plugin_handling:`Not_a_plugin
         ~link_libdeps_of:
           (Dep.List.concat
@@ -5584,7 +5565,6 @@ let recursive_alias_list = [
   Alias.libdeps;
   Alias.merlin;
   Alias.pp;
-  Alias.qtest;
   Alias.runtest;
   Alias.runtime_deps_of_tests;
   Alias.save_benchmarks;

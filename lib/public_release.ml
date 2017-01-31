@@ -205,20 +205,16 @@ end = struct
               | None -> begin
                   match Map.find package_map dir with
                   | None ->
-                    (* This library is not exported and not external: it is irrelevant
-                       for the public release *)
-                    return []
+                    return [(name, T.Lib_info.Js_not_released)]
                   | Some opam_package ->
                     let public_name =
                       Option.map lib.public_name ~f:Findlib_package_name.to_string
                     in
                     let info =
-                      { T.Lib_info.
-                        internal = true
-                      ; opam_package
-                      ; public_name
-                      ; wrapper = None
-                      }
+                      T.Lib_info.Js_released
+                        { opam_package
+                        ; public_name
+                        }
                     in
                     return [(name, info)]
                 end
@@ -235,12 +231,11 @@ end = struct
                 in
                 if not repackaged then begin
                   let info =
-                    { T.Lib_info.
-                      internal     = false
-                    ; opam_package = opam_package
-                    ; public_name  = Some public_name
-                    ; wrapper      = None
-                    }
+                    T.Lib_info.External
+                      { opam_package
+                      ; public_name
+                      ; wrapper = None
+                      }
                   in
                   return [(name, info)]
                 end else begin
@@ -251,16 +246,15 @@ end = struct
                     |> List.filter ~f:(fun s -> not (String.is_empty s))
                   in
                   let info =
-                    { T.Lib_info.
-                      internal     = false
-                    ; opam_package = opam_package
-                    ; public_name  = Some public_name
-                    ; wrapper      =
-                        Some
-                          { name = LN.to_module lib.name
-                          ; modules
-                          }
-                    }
+                    T.Lib_info.External
+                      { opam_package
+                      ; public_name
+                      ; wrapper =
+                          Some
+                            { name = LN.to_module lib.name
+                            ; modules
+                            }
+                      }
                   in
                   [(name, info)]
                 end
@@ -281,17 +275,13 @@ end = struct
             | _ -> "ocaml"
           in
           let info : T.Lib_info.t =
-            { internal     = false
-            ; opam_package = opam_package
-            ; public_name  = Some public_name
-            ; wrapper      = None
-            }
+            External { opam_package; public_name; wrapper = None }
           in
           (name, info))
       in
       let l =
         List.fold_left l ~init:[] ~f:(fun acc (name, info) ->
-          match info.public_name with
+          match T.Lib_info.public_name info with
           | Some pname when pname <> name -> (name, info) :: (pname, info) :: acc
           | _ -> (name, info) :: acc)
       in
