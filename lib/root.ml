@@ -358,6 +358,7 @@ let ocamlobjinfo_path = ocaml_bin ^/ "ocamlobjinfo"
 (* Binary in the tree *)
 let metaquot          = Named_artifact.in_findlib "ppx_tools:ppx_metaquot"
 let embedder          = Named_artifact.binary "ocaml-embed-compiler"
+let embed_and_compile = Named_artifact.binary "ocaml-embed-compiler-and-compile"
 
 (* Cmx in the tree - part of the public release *)
 let ppx_inline_test_runner_cmx =
@@ -1871,13 +1872,7 @@ let expand_and_eval_set ~dir set ~standard =
       *>>| fun files_contents ->
       let files_contents =
         List.map2_exn files files_contents ~f:(fun fn s ->
-          let sexp =
-            try
-              Sexp.of_string (String.strip s)
-            with exn ->
-              let path = relative ~dir fn in
-              failposf ~pos:(dummy_position path) !"%{Exn}" exn ()
-          in
+          let sexp = Sexp.of_string_conv_exn s ~source:(File (relative ~dir fn)) Fn.id in
           (fn, sexp))
         |> String.Map.of_alist_exn
       in
@@ -4080,7 +4075,7 @@ let embed_rules dc ~dir conf =
     in
     let gen_plugin_c =
       Rule.create
-        ~targets:[relative ~dir (plugin_name ^ ".c")] (
+        ~targets:[relative ~dir (plugin_name ^ ".o")] (
         Dep.both
           (stdlib_cmis ())
           (Dep.List.concat_map libraries ~f:(fun lib ->
@@ -4097,9 +4092,15 @@ let embed_rules dc ~dir conf =
            *>>| fun library_cmis ->
            local_cmis @ library_cmis)
         *>>= fun (stdlib_cmis, cmis) ->
-        Named_artifact.path dc.artifacts embedder
-        *>>= fun embedder ->
-        let dep_paths = cmis @ preprocessing_dep_paths @ [ time_limit; embedder ] in
+        Dep.both
+          (Named_artifact.path dc.artifacts embedder)
+          (Named_artifact.path dc.artifacts embed_and_compile)
+        *>>= fun (embedder, embed_and_compile) ->
+        let dep_paths =
+          cmis
+          @ preprocessing_dep_paths
+          @ [ time_limit; embedder; embed_and_compile ]
+        in
         Dep.all_unit (List.map ~f:Dep.path dep_paths) *>>| fun () ->
         (* Be careful here: there is a limit of MAX_ARG_STRLEN (130kB)  on any argument
            (note that this is distinct from ARG_MAX, which is bigger),
@@ -4108,26 +4109,29 @@ let embed_rules dc ~dir conf =
         Action.process ~dir
           (reach_from ~dir time_limit)
           (List.concat
-            [ [ "300"
-              ; reach_from ~dir embedder
-              ]
-            ; preprocessing_spec
-            ; [ "-cc"
-              ; ocamlopt_path
-              ; "-ocamldep"
-              ; ocamldep_path
-              ]
-            ; stdlib_cmis
-            ; List.map ~f:(reach_from ~dir) cmis
-            ; [ "-o"; plugin_name ^ ".c" ]
-            ])
+           [ [ "300"
+             ; reach_from ~dir embed_and_compile
+             ; plugin_name
+             ; C.Flavor.prog `C
+             ]
+           ; Compiler_config.arch_cflags
+           ; [ "-I"
+             ; ocaml_where
+             ; "--"
+             ; reach_from ~dir embedder
+             ]
+           ; preprocessing_spec
+           ; [ "-cc"
+             ; ocamlopt_path
+             ; "-ocamldep"
+             ; ocamldep_path
+             ]
+           ; stdlib_cmis
+           ; List.map ~f:(reach_from ~dir) cmis
+           ])
       )
     in
-    let include_search_path = [] in
-    List.concat [
-      [gen_plugin_c];
-      compile_c ~dir ~cflags:None ~default_cflags:[] ~include_search_path plugin_name;
-    ]
+    [gen_plugin_c];
   )
 
 (*----------------------------------------------------------------------
