@@ -369,6 +369,9 @@ let inline_benchmarks_public_cmx =
   Named_artifact.in_findlib "core_bench:public_runner.cmx"
 let toplevel_expect_test_cmx =
   Named_artifact.in_findlib "toplevel_expect_test:main.cmx"
+let ppx_driver_runner_cmx =
+  Named_artifact.in_findlib "ppx_driver:ppx_driver_runner.cmx"
+
 
 (* Other cmx in the tree *)
 let utop_main_cmx =
@@ -676,7 +679,7 @@ end = struct
           lib_dep
         else
           failheref [%here]
-            !"library %{LN} has a public name: %{Findlib_package_name}.\n\
+           !"library %{LN} has a public name: %{Findlib_package_name}.\n\
               You must refer to it in the jenga rules by its public name, \
               otherwise things won't work properly in the public release"
             lib.name public_name
@@ -1330,8 +1333,8 @@ module DC = struct
   } [@@deriving fields]
 end
 
-let get_dirname_and_basename_of_cmx_artifact_exn (dc : DC.t) a =
-  Named_artifact.path dc.artifacts a
+let get_dirname_and_basename_of_cmx_artifact_exn artifacts a =
+  Named_artifact.path artifacts a
   *>>| fun path ->
   let basename = Path.basename path in
   match String.chop_suffix ~suffix:".cmx" basename with
@@ -2155,11 +2158,15 @@ let lookup_pp dc ~default_pp ~preprocess_spec =
 
 let link_quietly = relative ~dir:Config.script_dir "link-quietly"
 
-let ppx_driver_runner libmap = Libmap.resolve_string_exn libmap "ppx_driver.runner"
-
 let link_deps_of_unforced_libs (module Mode : Ocaml_mode.S) ~libs =
   LL.dep_on_ocaml_artifacts libs ~suffixes:Mode.cmxa_and_a
   @ LL.dep_on_stubs libs
+
+let link_deps_of_objs (module Mode : Ocaml_mode.S) objs =
+  List.concat_map objs ~f:(fun (dir, base) ->
+    List.map Mode.cmx_and_o ~f:(fun suf ->
+      Dep.path (Path.relative ~dir (base ^ suf))))
+;;
 
 module Ppx_info = struct
   type t =
@@ -2201,26 +2208,37 @@ module Ppx_info = struct
     t_of_sexp (Sexp.of_string s)
 end
 
-let generate_ppx_exe_rules libmap ~dir ~link_flags =
+let generate_ppx_exe_rules libmap ~dir ~artifacts ~link_flags =
   match PPXset.parse_subdir_name ~dir with
   | None -> []
   | Some ppxset ->
     let target = PPXset.exe_path ppxset in
     let exe = basename target in
-    let libs = PPXset.to_libs ppxset libmap in
-    let ppx_driver_runner = ppx_driver_runner libmap in
-    let libs = libs @ [ppx_driver_runner] in
-    let lib_deps = libs_transitive_closure libmap libs in
+    let ppx_driver_runner_main =
+      get_dirname_and_basename_of_cmx_artifact_exn artifacts ppx_driver_runner_cmx
+    in
+    let mode = Ocaml_mode.native in
+    let module Mode = (val mode) in
+    let lib_deps =
+      Dep.memoize ~name:"ppx-lib-deps" (
+        libs_transitive_closure libmap
+          (Libmap.resolve_string_exn libmap "ppx_driver" :: PPXset.to_libs ppxset libmap))
+    in
     let predicates = ["custom_ppx"; "ppx_driver"] in
-    let fl_archives = Findlib.archives Ocaml_mode.native ~dir ~exe lib_deps ~predicates in
+    let fl_archives = Findlib.archives mode ~dir ~exe lib_deps ~predicates in
     let fl_include_flags = Findlib.include_flags ~dir exe lib_deps ~predicates in
     Rule.create ~targets:[target] (
-      lib_deps *>>= fun libs ->
-      (* Make sure we do link ppx_driver_runner last, otherwise we have a problem. *)
-      [%test_eq: Lib_dep.t option] (List.last libs) (Some ppx_driver_runner);
+      Dep.both ppx_driver_runner_main lib_deps *>>= fun (ppx_driver_runner_main, libs) ->
+      let ppx_driver_runner_main_path =
+        let dir, obj = ppx_driver_runner_main in
+        suffixed ~dir obj Mode.cmx
+      in
       let deps =
-        Dep.path link_quietly ::
-        link_deps_of_unforced_libs ~libs Ocaml_mode.native
+        List.concat
+          [ link_deps_of_objs mode [ ppx_driver_runner_main ]
+          ; [ Dep.path link_quietly ]
+          ; link_deps_of_unforced_libs ~libs mode
+          ]
       in
       Findlib.Query.result_and fl_archives
         (Findlib.Query.result_and fl_include_flags
@@ -2237,6 +2255,7 @@ let generate_ppx_exe_rules libmap ~dir ~link_flags =
            ; external_archives
            ; link_flags
            ; List.concat_map libs ~f:(LL.link_flags ~dir ~cmxa:".cmxa")
+           ; [ Path.reach_from ~dir ppx_driver_runner_main_path ]
            ; [ "-o"; basename target ]
            ]))
     :: Ppx_info.rule ~ppxset ~lib_deps
@@ -3192,12 +3211,6 @@ let link_deps_of_version_util (module Mode : Ocaml_mode.S) ~dir ~suppress_versio
     []
 ;;
 
-let link_deps_of_objs (module Mode : Ocaml_mode.S) objs =
-  List.concat_map objs ~f:(fun (dir, base) ->
-    List.map Mode.cmx_and_o ~f:(fun suf ->
-      Dep.path (Path.relative ~dir (base ^ suf))))
-;;
-
 let build_info_rules ~dir ~exe ~suf ~sexp_dep =
   let base = build_info_base ~base:(exe ^ suf) in
   let sexp_file = relative ~dir (base ^ ".sexp") in
@@ -3967,7 +3980,7 @@ let utop_rules (dc : DC.t) ~lib_in_the_tree =
   in
   let extra_lib = Some lib_in_the_tree in
   let utop_main =
-    get_dirname_and_basename_of_cmx_artifact_exn dc utop_main_cmx
+    get_dirname_and_basename_of_cmx_artifact_exn dc.artifacts utop_main_cmx
   in
   List.concat
     [ toplevel_rules dc
@@ -4012,7 +4025,7 @@ let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t
   in
 
   let toplevel_expect_tests_main =
-    get_dirname_and_basename_of_cmx_artifact_exn dc toplevel_expect_test_cmx
+    get_dirname_and_basename_of_cmx_artifact_exn dc.artifacts toplevel_expect_test_cmx
   in
   List.concat
     [ toplevel_rules dc ~dir
@@ -4355,10 +4368,10 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
     | false -> Dep.return []
   in
   let final_test_object =
-    get_dirname_and_basename_of_cmx_artifact_exn dc ppx_inline_test_runner_cmx
+    get_dirname_and_basename_of_cmx_artifact_exn dc.artifacts ppx_inline_test_runner_cmx
   in
   let expect_runner =
-    get_dirname_and_basename_of_cmx_artifact_exn dc ppx_expect_evaluator_cmx
+    get_dirname_and_basename_of_cmx_artifact_exn dc.artifacts ppx_expect_evaluator_cmx
   in
   match exe_artifact_in_std_aliases ~only_shared_object with
   | _, `Cmx -> []
@@ -4497,7 +4510,7 @@ let inline_bench_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree =
   let { Lib_in_the_tree. source_path = dir; name = libname; _ } = lib_in_the_tree in
   let exe = "inline_benchmarks_runner" in
   let bench_runner =
-    get_dirname_and_basename_of_cmx_artifact_exn dc bench_runner_cmx
+    get_dirname_and_basename_of_cmx_artifact_exn dc.artifacts bench_runner_cmx
   in
   List.concat [
     List.concat_map Ocaml_mode.all ~f:(fun mode ->
@@ -5320,11 +5333,11 @@ let setup_liblinks ~dir =
     LL.rules ~dir libmap
   )
 
-let setup_ppx_cache ~dir =
+let setup_ppx_cache ~dir ~artifacts =
   Scheme.rules_dep (
     Centos.link_flags *>>= fun link_flags ->
     Libmap_sexp.get *>>| fun libmap ->
-    generate_ppx_exe_rules libmap ~dir ~link_flags
+    generate_ppx_exe_rules libmap ~dir ~artifacts ~link_flags
   )
 
 (*----------------------------------------------------------------------
@@ -5650,7 +5663,10 @@ let scheme ~dir =
           else if Path.(=) dir LL.dir then
             setup_liblinks_dir ~dir
           else if Path.(=) parent_dir ppx_cache_dir then
-            setup_ppx_cache ~dir
+            Scheme.dep (
+              Artifacts_store_sexp.get *>>| fun artifacts ->
+              setup_ppx_cache ~dir ~artifacts
+            )
           else if Path.(=) parent_dir Odoc.odoc_output_dir then
             setup_odoc ~dir `Compile
           else if Path.(=) parent_dir Odoc.html_output_dir then
