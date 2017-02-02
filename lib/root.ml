@@ -3520,7 +3520,10 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
              the configure script doesn't properly detect which libraries define what
              symbols (http://caml.inria.fr/mantis/view.php?id=7164) *)
           (match Mode.which with
-           | `Native -> ["-ccopt"; "-Wl,--as-needed"]
+           | `Native -> 
+               (match Unix.Utsname.sysname (Unix.uname ()) with
+               | "Darwin" -> ["-ccopt"; "-Wl"]
+               | _ -> ["-ccopt"; "-Wl,--as-needed"])
            | `Byte -> ["-custom"]);
           build_info_args;
           version_util_args;
