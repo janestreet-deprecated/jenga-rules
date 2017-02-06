@@ -4716,7 +4716,7 @@ let merlin_ppx_directives ~dir (dc : DC.t) (jbuilds : Jbuild_types.Jbuild.t list
     Named_artifact.path dc.artifacts metaquot
     *>>| fun metaquot ->
     [ sprintf "FLG -ppx %s" (command_for_merlin [Path.to_absolute_string metaquot]) ]
-  | `Cant_express when String.(=) (Path.to_string dir) "external/migrate-parsetree/src" ->
+  | `Cant_express when String.(=) (Path.to_string dir) "external/ocaml-migrate-parsetree/src" ->
     Dep.return []
   | `Pps _ | `Cant_express as approx ->
     let pps, flags =
