@@ -71,14 +71,6 @@ let relative_rule ~dir ~targets ~deps ~non_relative_deps monadic_action =
     (Dep.both (Dep.all_unit deps) monadic_action
      *>>| fun ((), action) -> action)
 
-let alias_dot_filename_hack ~dir dot_name =
-  (* Sadly names given on the command line which begin with a dot (i.e. ".merlin") are
-     currently always interpreted as a reference to an alias. Workaround this problem for
-     specific instances by creating an alias to the dot-filename, named the same as the
-     filename (minus the dot). *)
-  let name = String.chop_prefix_exn dot_name ~prefix:"." in
-  Rule.alias (Alias.create ~dir name) [Dep.path (relative ~dir dot_name)]
-
 module Glob = struct
   include Glob
   let of_string ~dir s =
@@ -790,6 +782,7 @@ end = struct
     | `html _ -> []
     | `provides _ -> []
     | `enforce_style _ -> []
+    | `wikipub _ -> []
     | `public_release _ -> []
 
   let provides : Jbuild.t -> Provides_conf.t list = function
@@ -809,6 +802,7 @@ end = struct
     | `html _ -> []
     | `provides l -> l
     | `enforce_style _ -> []
+    | `wikipub _ -> []
     | `public_release _ -> []
 
   let libs ~dir =
@@ -4571,6 +4565,7 @@ let ocaml_libraries : [< Jbuild.t ] -> _ = function
   | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
+  | `wikipub _ -> []
   | `public_release _ -> []
 ;;
 
@@ -4594,6 +4589,7 @@ let xlibnames : Jbuild.t -> _ = function
   | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
+  | `wikipub _ -> []
   | `public_release _ -> []
 ;;
 
@@ -4614,6 +4610,7 @@ let extra_disabled_warnings : Jbuild.t -> _ = function
   | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
+  | `wikipub _ -> []
   | `public_release _ -> []
 ;;
 
@@ -4641,6 +4638,7 @@ let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
   | `html _
   | `provides _
   | `enforce_style _
+  | `wikipub _
   | `public_release _
     -> []
 
@@ -5134,28 +5132,33 @@ module Public_release = Public_release.Make(struct
   end)
 
 let jbuild_rules_with_directory_context dc ~dir jbuilds =
-  List.concat_map jbuilds ~f:(fun (j : Jbuild_types.Jbuild.t) ->
-    match j with
-    | `ocamllex _ | `ocamlyacc _ | `rule _ | `provides _ -> []
-    | `library conf -> library_rules dc ~dir conf
-    | `executables conf -> executables_rules dc ~dir conf
-    | `embed conf -> embed_rules dc ~dir conf
-    | `jane_script conf -> jane_script_rules dc conf
-    | `compile_c conf -> user_configured_compile_c_rules ~dir conf
-    | `alias conf -> [alias_conf_to_rule ~dir ~artifacts:dc.artifacts conf]
-    | `no_utop -> []
-    | `unified_tests conf ->
-      Js_unified_tests.rules ~dir
-        { target = conf.target
-        ; setup_script = Option.map conf.setup_script ~f:(expand_vars ~dir)
-        ; deps = Dep_conf_interpret.list_to_depends ~dir conf.deps
-        }
-    | `toplevel_expect_tests conf ->
-      toplevel_expect_tests_rules dc ~dir conf
-    | `public_repo conf -> Public_release.rules ~artifacts:dc.artifacts ~dir conf
-    | `html conf -> Html.rules ~dir conf
-    | `enforce_style conf -> enforce_style ~dir conf
-    | `public_release _ -> []
+  Scheme.all (
+    List.map jbuilds ~f:(fun (j : Jbuild_types.Jbuild.t) ->
+      match j with
+      | `ocamllex _ | `ocamlyacc _ | `rule _ | `provides _ -> Scheme.empty
+      | `library conf -> Scheme.rules (library_rules dc ~dir conf)
+      | `executables conf -> Scheme.rules (executables_rules dc ~dir conf)
+      | `embed conf -> Scheme.rules (embed_rules dc ~dir conf)
+      | `jane_script conf -> Scheme.rules (jane_script_rules dc conf)
+      | `compile_c conf -> Scheme.rules (user_configured_compile_c_rules ~dir conf)
+      | `alias conf -> Scheme.rules [alias_conf_to_rule ~dir ~artifacts:dc.artifacts conf]
+      | `no_utop -> Scheme.empty
+      | `unified_tests conf ->
+        Scheme.rules (
+          Js_unified_tests.rules ~dir
+            { target = conf.target
+            ; setup_script = Option.map conf.setup_script ~f:(expand_vars ~dir)
+            ; deps = Dep_conf_interpret.list_to_depends ~dir conf.deps
+            }
+        )
+      | `toplevel_expect_tests conf ->
+        Scheme.rules (toplevel_expect_tests_rules dc ~dir conf)
+      | `public_repo conf -> Scheme.rules (Public_release.rules ~artifacts:dc.artifacts ~dir conf)
+      | `html conf -> Scheme.rules (Html.rules ~dir conf)
+      | `enforce_style conf -> Scheme.rules (enforce_style ~dir conf)
+      | `wikipub files -> Wikipub.rules_for_individual_files ~dir files
+      | `public_release _ -> Scheme.empty
+    )
   )
 
 let transitive_runtest (dc : DC.t) ~dir jbuilds =
@@ -5171,19 +5174,21 @@ let transitive_runtest (dc : DC.t) ~dir jbuilds =
 ;;
 
 let rules_with_directory_context dc ~dir jbuilds =
-  Scheme.rules
-    (List.concat [
-       [
-         Rule.alias (Alias.lib_artifacts ~dir) [];
-         Rule.default ~dir [Dep.alias (Alias.lib_artifacts ~dir)];
-       ];
-       transitive_runtest dc ~dir jbuilds;
-       jbuild_rules_with_directory_context dc ~dir jbuilds;
-       generate_dep_rules dc ~dir jbuilds;
-       merlin_rules dc ~dir jbuilds;
-       Info_files.write ~dir;
-       Public_release.Public_libmap.global_rules ~dir;
-     ])
+  Scheme.all [
+    Scheme.rules
+      (List.concat [
+         [
+           Rule.alias (Alias.lib_artifacts ~dir) [];
+           Rule.default ~dir [Dep.alias (Alias.lib_artifacts ~dir)];
+         ];
+         transitive_runtest dc ~dir jbuilds;
+         generate_dep_rules dc ~dir jbuilds;
+         merlin_rules dc ~dir jbuilds;
+         Info_files.write ~dir;
+         Public_release.Public_libmap.global_rules ~dir;
+       ]);
+    jbuild_rules_with_directory_context dc ~dir jbuilds;
+  ]
 
 let rules_without_directory_context ~dir jbuilds artifacts =
   Scheme.rules
@@ -5205,6 +5210,7 @@ let rules_without_directory_context ~dir jbuilds artifacts =
        | `html _
        | `provides _
        | `enforce_style _
+       | `wikipub _
        | `public_release _
          -> []))
 ;;
@@ -5724,16 +5730,28 @@ let ocaml_version_file_rule =
 
 let root_only_scheme =
   let dir = Path.the_root in
+  let all_wikipub_files =
+    return ()
+    *>>= fun () ->
+    deep_unignored_subdirs ~dir
+    *>>= fun dirs ->
+    Dep.List.concat_map dirs ~f:(fun dir ->
+      User_or_gen_config.load ~dir
+      *>>= Dep.List.concat_map ~f:(function
+        | `wikipub files -> Wikipub.interpret_files_as_paths ~dir files
+        | _ -> return []))
+  in
   Scheme.all [
     Scheme.sources [ ocaml_version_file_source_path ];
-    Scheme.rules [
+    Scheme.rules ([
       ocaml_bin_file_rule ~prefix:"omake-";
       alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"omake-");
       ocaml_bin_file_rule ~prefix:"";
       alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"");
       ocaml_version_file_rule;
       alias_dot_filename_hack ~dir (Path.basename ocaml_version_file_output_path);
-    ]
+    ] @ Wikipub.rule_for_global_check ~dir ~all_files:all_wikipub_files
+    )
   ]
 
 let scheme ~dir =

@@ -690,7 +690,7 @@ module Jbuild = struct
      used by tools other than jenga, e.g. an Emacs [after-save-hook], to automatically
      run [apply-style]. *)
   | `enforce_style of Enforce_style_conf.t
-
+  | `wikipub of [ `Standard_formats | `Files of string list ]
   ]
   [@@deriving of_sexp]
 end

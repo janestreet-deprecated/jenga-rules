@@ -225,3 +225,11 @@ module Rule = struct
     write_string (String.concat ~sep:" " names) ~target
 
 end
+
+let alias_dot_filename_hack ~dir dot_name =
+  (* Sadly names given on the command line which begin with a dot (i.e. ".merlin") are
+     currently always interpreted as a reference to an alias. Workaround this problem for
+     specific instances by creating an alias to the dot-filename, named the same as the
+     filename (minus the dot). *)
+  let name = String.chop_prefix_exn dot_name ~prefix:"." in
+  Rule.alias (Alias.create ~dir name) [Dep.path (relative ~dir dot_name)]
