@@ -221,6 +221,17 @@ module Dep_conf = struct
     | Sexp.List _ as sexp -> t_of_sexp sexp
 end
 
+module Uses_catalog = struct
+  (** This determines how jenga should wrap commands: *)
+  type t =
+    | No (** prevent it from reaching out to catalog *)
+    | Yes (** create a temporary instance for it *)
+    | Yes_but_exempt_from_sandboxing  (** let it do what it wants. This should only be
+                                          used for the tests of catalog itself. *)
+
+  [@@deriving sexp]
+end
+
 module Sandbox_conf = struct
   include Jenga_lib.Api.Sandbox
   let t_of_sexp : Sexp.t -> t = function
@@ -265,6 +276,8 @@ module Inline_tests = struct
     javascript : build_and_run sexp_option;
     (** Should inline_tests_runner be built as a .exe or as a .so? *)
     only_shared_object : bool [@default false];
+    (** Does the inline test use catalog? *)
+    uses_catalog : Uses_catalog.t [@default No];
     (** Sandbox to use for running the tests *)
     sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
   }
@@ -314,6 +327,7 @@ module Inline_tests = struct
     native = None;
     javascript = None;
     only_shared_object = false;
+    uses_catalog = No;
     sandbox = Sandbox_conf.hardlink;
   }
 end
@@ -327,6 +341,7 @@ module Rule_conf = struct
     deps : Dep_conf.t list;
     action : User_action.Unexpanded.t;
     sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
+    uses_catalog : Uses_catalog.t [@default No];
     timeout : Time.Span.t option [@default Some default_timeout];
   } [@@deriving of_sexp, fields]
 end
@@ -337,6 +352,7 @@ module Alias_conf = struct
     deps : Dep_conf.t list;
     action : User_action.Unexpanded.t sexp_option;
     sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
+    uses_catalog : Uses_catalog.t [@default No];
     timeout : Time.Span.t option [@default Some default_timeout];
   } [@@deriving of_sexp, fields]
 end
@@ -581,6 +597,7 @@ module Unified_tests = struct
     { target : string [@default "runtest"]
     ; deps : Dep_conf.t list
     ; setup_script : String_with_vars.t sexp_option
+    ; uses_catalog : Uses_catalog.t [@default No];
     }
   [@@deriving of_sexp]
 end

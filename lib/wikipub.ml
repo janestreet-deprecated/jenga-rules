@@ -2,6 +2,7 @@ open! Core.Std
 open! Import
 
 let wikipub = Path.root_relative "app/wikipub/bin/main.exe"
+let template = Path.root_relative "app/wikipub/data/template.html"
 let target ~dir ~base ~suf = relative ~dir (Filename.chop_extension base ^ suf)
 
 let interpret_files ~dir files ~k =
@@ -21,9 +22,14 @@ let rules_for_individual_files ~dir files =
         Rule.create
           ~targets:[ target ~dir ~base:file ~suf:".confluence_xml"
                    ; target ~dir ~base:file ~suf:".confluence_metadata" ]
-          (Dep.all_unit [ Dep.path (relative ~dir file); Dep.path wikipub ]
+          (Dep.all_unit [ Dep.path (relative ~dir file)
+                        ; Dep.path wikipub
+                        ; Dep.path template
+                        ]
            *>>| fun () ->
-           Action.process ~dir (Path.reach_from ~dir wikipub) [ "compile-page"; file ]))
+           Action.process ~dir (Path.reach_from ~dir wikipub)
+             [ "compile-page"; file; "-template"; reach_from ~dir template ]
+          ))
     in
     Scheme.rules rules
   )

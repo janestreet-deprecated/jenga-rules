@@ -1747,48 +1747,61 @@ end
 
 let time_limit = relative ~dir:Config.script_dir "time_limit"
 
-let expanded_to_action ~sandbox ~timeout ~dir (t : string User_action.t) =
+let wrap_timeout timeout (process : Action.process) =
+  match timeout with
+  | None -> process
+  | Some span ->
+    let timeout_in_sec = Float.iround_up_exn (Time.Span.to_sec span) in
+    { dir = process.dir
+    ; prog = reach_from ~dir:process.dir time_limit
+    ; args = Int.to_string timeout_in_sec :: process.prog :: process.args
+    }
+
+let expanded_to_action ~sandbox ~timeout ~uses_catalog ~dir (t : string User_action.t) =
   let sandbox = Some sandbox in
   match t with
   | Shexp shexp -> User_action.Mini_shexp.to_action ?sandbox ~dir shexp
   | Bash cmd ->
-    match timeout with
-    | None -> bash ?sandbox ~dir cmd
-    | Some span ->
-      let timeout_in_sec = Float.iround_up_exn (Time.Span.to_sec span) in
-      Action.process ?sandbox ~dir
-        (reach_from ~dir time_limit)
-        (Int.to_string timeout_in_sec :: bash_prog :: bash_args @ [ cmd ])
+    let process =
+      (* timeout should be the outermost wrapper, in case catalog gets stuck *)
+      Action.bash_process ~dir ~cmd
+      |> Catalog_wrapper.wrap uses_catalog ~can_assume_env_is_setup:true
+      |> wrap_timeout timeout
+    in
+    Action.process ?sandbox ~dir:process.dir process.prog process.args
+;;
 
 let rule_conf_to_rule ~dir artifacts conf =
-  let { Rule_conf. targets; deps; action; sandbox; timeout } = conf in
+  let { Rule_conf. targets; deps; action; sandbox; uses_catalog; timeout } = conf in
   let sandbox = if sandbox_rules then sandbox else Sandbox.default in
   let action =
     User_action_interpret.expand ~dir ~artifacts ~targets ~deps action
-    *>>| expanded_to_action ~sandbox ~timeout ~dir
+    *>>| expanded_to_action ~sandbox ~dir ~uses_catalog ~timeout
   in
   Rule.create ~targets:(List.map targets ~f:(relative ~dir)) (
     Dep.both
-      (Dep.all_unit (Dep.path time_limit :: Dep_conf_interpret.list_to_depends ~dir deps))
+      (Dep.all_unit ((Catalog_wrapper.deps uses_catalog) @
+                     (Dep.path time_limit :: Dep_conf_interpret.list_to_depends ~dir deps)))
       action
     *>>| fun ((), action) -> action
   )
 
 let alias_conf_to_rule ~dir ~artifacts conf =
-  let { Alias_conf. name; deps; action; sandbox; timeout } = conf in
+  let { Alias_conf. name; deps; action; sandbox; uses_catalog; timeout } = conf in
   let sandbox = if sandbox_rules then sandbox else Sandbox.default in
   let action =
     Option.map action
       ~f:(fun a ->
         User_action_interpret.expand ~dir ~artifacts ~targets:[] ~deps a
-        *>>| expanded_to_action ~sandbox ~timeout ~dir)
+        *>>| expanded_to_action ~sandbox ~timeout ~uses_catalog ~dir)
   in
   let deps = Dep_conf_interpret.list_to_depends ~dir deps in
   let deps =
     match action with
     | None -> deps
     | Some action ->
-      [Dep.action (Dep.both (Dep.all_unit (Dep.path time_limit :: deps)) action
+      [Dep.action (Dep.both (Dep.all_unit (Catalog_wrapper.deps uses_catalog
+                                           @ (Dep.path time_limit :: deps))) action
                    *>>| fun ((), action) -> action)]
   in
   Rule.alias (Alias.create ~dir name) deps
@@ -4239,7 +4252,8 @@ let inline_tests_args ~runtime_environment ~libname ~flags : string list =
   @ other_drop_arg
   @ flags
 
-let inline_tests_script_rule ~dir ~libname ~runtime_environment ~script:target ~flags =
+let inline_tests_script_rule
+      ~uses_catalog ~dir ~libname ~runtime_environment ~script:target ~flags =
   let run =
     if drop_test
     then "echo >&2 'Tests have been disabled'; exit 1"
@@ -4250,7 +4264,17 @@ let inline_tests_script_rule ~dir ~libname ~runtime_environment ~script:target ~
           Config.nodejs_prog ^ " ./inline_tests_runner" ^ Js_of_ocaml.exe_suf
         | `Emacs ->
           Config.emacs_prog ^ " -Q -L . -batch -l inline_tests_runner -- "
-        | `Exe -> "./inline_tests_runner.exe"
+        | `Exe ->
+          (* If an inline test configuration claims that catalog will not be used, we want
+             the same behavior whether jenga runs the tests or people run the test, which
+             is why we pass ~can_assume_env_is_setup. *)
+          let r =
+            Catalog_wrapper.wrap uses_catalog
+              ~can_assume_env_is_setup:false
+              { prog = "./inline_tests_runner.exe"; args = []; dir }
+          in
+          assert (Path.(=) r.dir dir);
+          concat_quoted (r.prog :: r.args)
       in
       sprintf !{|exec %s %{concat_quoted} "$@"|}
         command (inline_tests_args ~runtime_environment ~libname ~flags)
@@ -4296,11 +4320,14 @@ cd "$(dirname "$(readlink -f "$0")")"
 |} ^ run)
 ;;
 
-let run_inline_action ~dir ~user_deps ~exe_deps ~flags ~runtime_deps ~sandbox filename =
+let run_inline_action ~dir ~uses_catalog ~user_deps ~exe_deps ~flags ~runtime_deps
+      ~sandbox filename =
   let sources = List.map ~f:(relative ~dir) (filename :: exe_deps) in
   (Dep.all_unit (List.map (time_limit :: sources) ~f:Dep.path
                  @ runtime_deps
-                 @ Dep_conf_interpret.list_to_depends ~dir user_deps)
+                 @ Dep_conf_interpret.list_to_depends ~dir user_deps
+                 @ Catalog_wrapper.deps uses_catalog
+                )
    *>>| fun () ->
    let args =
      (* Longer timeout for the javascript tests, which are sometimes much slower. *)
@@ -4403,9 +4430,12 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
           ~exe)
     ; [ inline_tests_html_rule ~dir ~libname ~flags:user_config.flags ~html;
         inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
-          ~script:exe_js ~runtime_environment:`Javascript;
+          ~script:exe_js ~runtime_environment:`Javascript
+          ~uses_catalog:user_config.uses_catalog;
         inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
-          ~script:exe ~runtime_environment:(if only_shared_object then `Emacs else `Exe) ]
+          ~script:exe ~runtime_environment:(if only_shared_object then `Emacs else `Exe)
+            ~uses_catalog:user_config.uses_catalog
+       ]
     ; (
        let inline_test_exe_paths =
          Dep.memoize ~name:"inline-test-exe-paths" (
@@ -4464,6 +4494,7 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
                      ~user_deps:[]
                      ~runtime_deps:[]
                      ~flags:["-list-partitions"]
+                     ~uses_catalog:user_config.uses_catalog
                      ~sandbox:Sandbox.default
                   )
                 *>>= fun output ->
@@ -4478,6 +4509,7 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
                           then [ Dep.path (relative ~dir source) ]
                           else [])
                        ~flags:["-partition"; p]
+                       ~uses_catalog:user_config.uses_catalog
                        ~sandbox
                     )))
               in
@@ -5149,6 +5181,7 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
             { target = conf.target
             ; setup_script = Option.map conf.setup_script ~f:(expand_vars ~dir)
             ; deps = Dep_conf_interpret.list_to_depends ~dir conf.deps
+            ; uses_catalog = conf.uses_catalog
             }
         )
       | `toplevel_expect_tests conf ->
@@ -5511,7 +5544,8 @@ let tmpdir = ".jenga.tmp"
 let delete_and_recreate_tmpdir_action =
   (* We delete and recreate the tmpdir when jenga starts, and each time a polling build
    * restarts. ("*** jenga: rebuilding"). So we run this action in build_begin. *)
-  bashf ~dir:Path.the_root "chmod -R +w %s &>/dev/null || true; rm -rf %s; mkdir -p %s" tmpdir tmpdir tmpdir
+  bashf ~dir:Path.the_root "chmod -R +w %s &>/dev/null || true; rm -rf %s; mkdir -p %s"
+    tmpdir tmpdir tmpdir
 
 let putenv () = (* setup external actions *)
   [

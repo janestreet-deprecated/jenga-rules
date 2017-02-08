@@ -8,6 +8,7 @@ type t =
   { target : string
   ; deps : unit Dep.t list
   ; setup_script : string option
+  ; uses_catalog : Jbuild_types.Uses_catalog.t
   }
 
 val rules : dir:Path.t -> t -> Rule.t list

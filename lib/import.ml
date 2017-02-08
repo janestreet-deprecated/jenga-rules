@@ -153,6 +153,7 @@ let ccopts = function
 
 let bash_prog = "bash"
 let bash_args = [ "-e"; "-u"; "-o"; "pipefail"; "-c" ]
+
 let bash ?sandbox ?ignore_stderr ~dir command_string =
   Jenga_lib.Api.Action.process ?sandbox ?ignore_stderr ~dir
     ~prog:bash_prog ~args:(bash_args @ [ command_string ]) ()
@@ -186,6 +187,14 @@ let remove_dups_and_sort xs =
   String.Set.to_list (String.Set.of_list xs)
 
 module Action = struct
+  type process =
+    { prog : string
+    ; args : string list
+    ; dir : Path.t
+    }
+  let bash_process ~dir ~cmd =
+    { dir; prog = bash_prog; args = bash_args @ [ cmd ] }
+
   include Jenga_lib.Api.Action
 
   let process ?env ?sandbox ?ignore_stderr ~dir prog args =
