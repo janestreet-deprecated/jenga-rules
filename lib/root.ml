@@ -348,7 +348,6 @@ let ocaml_path      = ocaml_bin ^/ "ocaml"
 let ocamlobjinfo_path = ocaml_bin ^/ "ocamlobjinfo"
 
 (* Binary in the tree *)
-let metaquot          = Named_artifact.in_findlib "ppx_tools:ppx_metaquot"
 let embedder          = Named_artifact.binary "ocaml-embed-compiler"
 let embed_and_compile = Named_artifact.binary "ocaml-embed-compiler-and-compile"
 
@@ -2087,8 +2086,6 @@ module PP_style = struct
   type t =
   | Nothing
   | Command of string
-  | Metaquot (* ML source code uses ppx-style meta-quotations: i.e. [%expr ],. [%e ]
-                (probably to implement a pre-processor) *)
   | PP of PP.t list * string list
 
   let of_kind dc (kind:Preprocess_kind.t) =
@@ -2096,7 +2093,6 @@ module PP_style = struct
     match kind with
     | `no_preprocessing -> Nothing
     | `command s        -> Command (expand_vars ~dir s)
-    | `metaquot         -> Metaquot
     | `pps names ->
       let pps, flags = Pp_or_flag.split names in
       PP (pps, flags)
@@ -2280,11 +2276,10 @@ let get_pp_user_deps ~mc : unit Dep.t list =
   Dep_conf_interpret.list_to_depends ~dir preprocessor_deps
 
 let get_pp_deps ~mc : unit Dep.t list =
-  let {MC. dc; pp_style; _} = mc in
+  let {MC. pp_style; _} = mc in
   get_pp_user_deps ~mc @
     begin match pp_style with
     | PP_style.Nothing | Command _ -> []
-    | Metaquot -> [Named_artifact.path dc.artifacts metaquot *>>= Dep.path]
     | PP (pps, _flags) -> ppx_deps_without_user_deps pps
     end
 
@@ -2351,9 +2346,6 @@ let get_pp_com_args ~(kind:ml_kind) ~mc ~name : string list Dep.t =
   let {MC. dc; dir; libname; can_setup_inline_runners; pp_style; _} = mc in
   match pp_style with
   | PP_style.Nothing -> Dep.return []
-  | Metaquot ->
-    Named_artifact.path mc.dc.artifacts metaquot *>>| fun metaquot ->
-    ["-ppx"; reach_from ~dir metaquot ]
   | Command string -> Dep.return ["-pp"; string]
   | PP (pps, flags) ->
     get_ppx_command ~name ~kind:(Some kind) ~dir ~libname
@@ -2406,10 +2398,6 @@ let generate_pp mc ~kind ~name =
   | Command com ->
     generate_pp_using_ppx mc ~kind ~name ~pps:[]
       ~flags:["-no-check"; "-no-optcomp"; "-pp"; com]
-
-  | Metaquot ->
-    generate_pp_using_ppx mc ~kind ~name ~pps:[PP.of_string "ppx_metaquot"]
-      ~flags:["-no-check"; "-no-optcomp"]
 
   | PP (pps, flags) ->
     generate_pp_using_ppx mc ~kind ~name ~pps ~flags
@@ -4708,13 +4696,11 @@ let command_for_merlin args =
   String.concat [ "'"; String.concat args ~sep:" "; "'" ]
 ;;
 
-let merlin_ppx_directives ~dir (dc : DC.t) (jbuilds : Jbuild_types.Jbuild.t list) =
+let merlin_ppx_directives ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
   let merge_approx approx1 approx2 =
     match approx1, approx2 with
     | `No_code, v | v, `No_code -> v
     | `Cant_express, _ | _, `Cant_express -> `Cant_express
-    | `Metaquot, `Metaquot -> `Metaquot
-    | _, `Metaquot | `Metaquot, _ -> `Cant_express
     | `No_preprocessing, `No_preprocessing -> `No_preprocessing
     | `No_preprocessing, _ | _, `No_preprocessing -> `Cant_express
     | `Pps pps_and_flags1, `Pps pps_and_flags2 ->
@@ -4728,7 +4714,6 @@ let merlin_ppx_directives ~dir (dc : DC.t) (jbuilds : Jbuild_types.Jbuild.t list
     | [(`pps pps, _)] ->
       let pps, flags = Pp_or_flag.split pps in
       `Pps (pps, flags)
-    | [(`metaquot, _)] -> `Metaquot
     | [] | [(`no_preprocessing, _)] -> `No_preprocessing
     | _ :: _ :: _ | [(`command _, _)] -> `Cant_express
   in
@@ -4742,10 +4727,6 @@ let merlin_ppx_directives ~dir (dc : DC.t) (jbuilds : Jbuild_types.Jbuild.t list
   in
   match approx with
   | `No_code | `No_preprocessing -> Dep.return []
-  | `Metaquot ->
-    Named_artifact.path dc.artifacts metaquot
-    *>>| fun metaquot ->
-    [ sprintf "FLG -ppx %s" (command_for_merlin [Path.to_absolute_string metaquot]) ]
   | `Cant_express when String.(=) (Path.to_string dir) "external/ocaml-migrate-parsetree/src" ->
     Dep.return []
   | `Pps _ | `Cant_express as approx ->
@@ -4778,7 +4759,7 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
   if List.is_empty dc.DC.xlibnames && Path.(<>) dir Path.the_root then [] else [
     Rule.create ~targets:[target] (
       merlin_1step_libs dc ~dir *>>= fun libs ->
-      merlin_ppx_directives ~dir dc jbuilds *>>= fun preprocessor_directives ->
+      merlin_ppx_directives ~dir jbuilds *>>= fun preprocessor_directives ->
       let dot_merlin_contents =
         String.concat ~sep:"\n" (
           ("STDLIB " ^ ocaml_where)
@@ -5217,7 +5198,6 @@ let rules_with_directory_context dc ~dir jbuilds =
          transitive_runtest dc ~dir jbuilds;
          generate_dep_rules dc ~dir jbuilds;
          merlin_rules dc ~dir jbuilds;
-         Info_files.write ~dir;
          Public_release.Public_libmap.global_rules ~dir;
        ]);
     jbuild_rules_with_directory_context dc ~dir jbuilds;

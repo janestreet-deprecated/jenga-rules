@@ -111,19 +111,15 @@ module Make(Hg : sig
         Alias.create ~dir:(relative ~dir:repo dir) alias_name
     )
 
-  let projection_rule ~proj ~with_qtest =
+  let projection_rule ~proj =
     let {Projection.repo;name} = proj in
     let infer_targets_for_files = root_relative "bin/infer-targets-for-files" in
-    let suffix = if with_qtest then "" else "-except-qtest" in
-    let projection_name = name ^ "-projection" ^ suffix in
-    let alias_name = Alias.create ~dir:Path.the_root projection_name in
+    let alias_name = Alias.create ~dir:Path.the_root (name ^ "-projection") in
     Rule.alias alias_name [
       Dep.action_stdout (
         projection_files_action proj ~follow_up:(
           Dep.path infer_targets_for_files,
-          sprintf !"%{quote} %{quote}"
-            (reach_from ~dir:repo infer_targets_for_files)
-            (Bool.to_string with_qtest)))
+          sprintf !"%{quote}" (reach_from ~dir:repo infer_targets_for_files)))
       *>>= fun string ->
       let aliases = parse_infer_targets_output ~repo string in
       let deps = List.map aliases ~f:Dep.alias in
@@ -133,10 +129,8 @@ module Make(Hg : sig
   let setup_projections_targets =
     Scheme.rules_dep (
       list_projections *>>| fun projs ->
-      List.concat_map projs ~f:(fun proj -> [
-        projection_rule ~proj ~with_qtest:false;
-        projection_rule ~proj ~with_qtest:true;
-      ]))
+      List.map projs ~f:(fun proj -> projection_rule ~proj)
+    )
 
   module Projections_check = struct
 

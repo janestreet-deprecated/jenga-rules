@@ -143,10 +143,26 @@ module Preprocess_kind = struct
   type t = [
   | `no_preprocessing
   | `command            of String_with_vars.t
-  | `metaquot
   | `pps                of Pp_or_flag.t list
   ]
   [@@deriving of_sexp]
+
+  let t_of_sexp = function
+    | Sexp.Atom "metaquot" as sexp ->
+      of_sexp_error "\
+\"metaquot\" is no longer supported. For code in the external/ directory, replace it by:
+
+  (pps (ppx_tools_metaquot))
+
+which is equivalent to the old \"metaquot\". Otherwise replace it by:
+
+  (pps (ppx_metaquot))
+
+The main difference between the two is that \"ppx_metaquot\" doesn't understand
+[@@@metaloc ...] annotations and always uses a \"loc\" variable rather than a global
+reference."
+        sexp
+    | sexp -> t_of_sexp sexp
 end
 
 module Preprocess_spec = struct
