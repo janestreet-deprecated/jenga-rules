@@ -4,3 +4,5 @@
   (libraries (jenga re.pcre parsexp))
   (skip_from_default true)
   (inline_tests ((native dont_build_dont_run)))))
+
+(jbuild_version jane_street)

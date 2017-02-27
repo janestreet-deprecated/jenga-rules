@@ -530,8 +530,9 @@ let manifest_dirs_rule ~repo =
     ] *>>| fun () ->
     (* Here and in the various calls to hg, we ignore stderr because otherwise we can get
        random failures because hg outputs messages about taking the lock. Unfortunately,
-       there seems to be no way to silence these messages. *)
-    bashf ~ignore_stderr:true ~dir:repo
+       there seems to be no way to silence these messages.
+       We don't sandbox because the command creates .hg/blackbox.log.*)
+    bashf ~ignore_stderr:true ~dir:repo ~sandbox:Sandbox.none
       !"%{quote} status -acdmn | sed 's|^|./|' | rev | cut -d/ -f2- | rev | sort -u > %{quote}"
       hg_prog (basename target)
   )
@@ -4450,7 +4451,9 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
            inline_test_exe_paths *>>= function
            | None -> return ()
            | Some names ->
-             Dep.all_unit (names @ Dep_conf_interpret.list_to_depends ~dir user_config.deps)
+             Dep.all_unit (names
+                           @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
+                           @ Catalog_wrapper.deps user_config.uses_catalog)
          ]
        :: match alias_for_inline_runners ~dir ~skip_from_default with
           | None -> []

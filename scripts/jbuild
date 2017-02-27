@@ -9,3 +9,5 @@
     (link-quietly as scripts/link-quietly)
     (time_limit as scripts/time_limit)
    ))))
+
+(jbuild_version jane_street)

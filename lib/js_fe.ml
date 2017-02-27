@@ -74,7 +74,8 @@ module Make(Hg : sig
       fe_sexp_deps ~repo;
       dep;
     ] *>>| fun () ->
-    bashf ~dir:repo
+    (* We don't sandbox because the command creates .hg/blackbox.log. *)
+    bashf ~dir:repo ~sandbox:Sandbox.none
       !"%{quote} obligations projection %{quote} | %s"
       (Path.to_absolute_string fe_prog) name follow_up_command
 

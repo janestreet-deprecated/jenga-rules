@@ -3,13 +3,15 @@ open Import
 open Jbuild_types
 open Ocaml_types
 
-let opam_switches =
-  [ "4.03.0"
-  ; "4.03.0+32bit"
-  ; "osx-4.03.0"
-  ; "4.04.0"
-  ; "4.05.0"
-  ]
+let build_servers =
+  let var = "PUBLIC_RELEASE_BUILD_SERVERS" in
+  Var.peek
+    (Var.map (Var.register var) ~f:(fun x ->
+       let s = Option.value x ~default:Config.public_release_build_servers_default in
+       Sexp.of_string_conv_exn ~source:(Other ("variable " ^ var))
+         s [%of_sexp: (string * Host_and_port.t) list]))
+
+let opam_switches = List.map build_servers ~f:fst
 
 module Make(Jenga_root : sig
     module Lib_modules : sig
@@ -78,8 +80,6 @@ end = struct
   let files_to_copy_filename = "files-to-copy"
   let files_to_copy_path ~dir = relative ~dir files_to_copy_filename
 
-  let build_servers_config = root_relative "public-release/build-servers.cfg"
-
   let escape_for_egrep =
     let module S = struct type t = Ok | Invalid | Escape end in
     let char_status : char -> S.t = function
@@ -122,13 +122,13 @@ end = struct
           (Dep.path public_release_files)
           (Dep.List.concat_map conf.dirs ~f:(fun (_, dir) -> deep_unignored_subdirs ~dir))
         *>>| fun ((), unignored_subdirs) ->
-        bashf ~dir:Path.the_root
+        bashf ~dir ~sandbox:Sandbox.hardlink
           !"{ egrep %{quote} %{quote} || true; } > %{quote}"
           (List.map unignored_subdirs ~f:Path.to_string
            |> or_regexp_for_grep
            |> sprintf "^(%s)/jbuild$")
-          (Path.to_string public_release_files)
-          (Path.to_string target)
+          (reach_from ~dir public_release_files)
+          (Path.basename target)
       )
 
     let dirs_exported_by_package ~package =
@@ -144,16 +144,16 @@ end = struct
     let all_repos_file   = relative ~dir:repos ".repos"
     let public_libmap    = relative ~dir:repos "public-libmap.sexp"
 
-    let create_all_repos_file =
+    let create_all_repos_file ~dir =
       Dep.path public_release_files
       *>>| fun () ->
-      bashf ~dir:Path.the_root
+      bashf ~dir ~sandbox:Sandbox.hardlink
         !"sed -nr %{quote} %{quote} > %{quote}"
         (Path.to_string repos
          |> escape_for_egrep
          |> sprintf "s|^(%s/[^/]*)/jbuild$|\\1|p")
-        (Path.to_string public_release_files)
-        (Path.to_string all_repos_file)
+        (Path.reach_from ~dir public_release_files)
+        (Path.basename all_repos_file)
 
     let create_package_map =
       Dep.contents all_repos_file
@@ -291,10 +291,46 @@ end = struct
 
     let global_rules ~dir =
       if not (Path.equal dir repos) then [] else begin
-        [ Rule.create ~targets:[package_map_file] create_package_map
-        ; Rule.create ~targets:[all_repos_file  ] create_all_repos_file
-        ; Rule.create ~targets:[public_libmap   ] create_public_libmap
-        ]
+        let all_repos =
+          Dep.contents all_repos_file
+          *>>| fun s ->
+          List.map (String.split_lines s) ~f:Path.root_relative
+        in
+        let bins =
+          Dep.alias
+            (Alias.create ~dir:(Path.root_relative "public-release/bin") "DEFAULT")
+        in
+        List.concat
+          [ [ Rule.create ~targets:[package_map_file] create_package_map
+            ; Rule.create ~targets:[all_repos_file  ] (create_all_repos_file ~dir)
+            ; Rule.create ~targets:[public_libmap   ] create_public_libmap
+            (* Note: the .tarballs alias here is invoked by hydra, don't change it! *)
+            ; Rule.alias (Alias.create ~dir "tarballs")
+                [ bins
+                ; all_repos *>>= fun paths ->
+                  Dep.all_unit
+                    (List.map paths ~f:(fun dir ->
+                       Dep.path (Path.relative ~dir "dist.tar.gz")))
+                ]
+            ; Rule.alias (Alias.create ~dir "metadata")
+                [ bins
+                ; all_repos *>>= fun paths ->
+                  Dep.all_unit
+                    (List.map paths ~f:(fun dir ->
+                       Dep.path (Path.relative ~dir ".metadata.sexp")))
+                ]
+            ; Rule.alias (Alias.create ~dir "binaries")
+                (List.map opam_switches ~f:(fun sw ->
+                   Dep.alias (Alias.create ~dir ("binaries." ^ sw))))
+            ]
+          ; List.map opam_switches ~f:(fun sw ->
+              Rule.alias (Alias.create ~dir ("binaries." ^ sw))
+                [ bins
+                ; all_repos *>>= fun paths ->
+                  Dep.all_unit (List.map paths ~f:(fun dir ->
+                    Dep.path (Path.relative ~dir (sprintf "bin.%s.lzo.md5sum" sw))))
+                ])
+          ]
       end
   end
 
@@ -381,15 +417,15 @@ end = struct
         ; Dep.path public_release_files
         ]
       *>>| fun () ->
-      bashf ~dir:Path.the_root
+      bashf ~dir ~sandbox:Sandbox.hardlink
         !"{ egrep %{quote} %{quote} | sed -rf %{quote}; printf '%%s' %{quote}; } > %{quote}"
         (List.map conf.dirs ~f:(fun (_, p) -> Path.to_string p) |> or_regexp_for_grep
          |> sprintf "^(%s)/")
-        (Path.to_string public_release_files)
-        (Path.to_string sed_script)
+        (reach_from ~dir public_release_files)
+        (reach_from ~dir sed_script)
         (List.map conf.additional_files ~f:(fun p -> Path.to_string p ^ "\n")
          |> String.concat)
-        (Path.to_string target)
+        (reach_from ~dir target)
     )
 
   let bin = root_relative "public-release/bin"
@@ -404,12 +440,6 @@ end = struct
 
   let build_repo = root_relative "public-release/bin/build-pkg/client/build_pkg.exe"
 
-  let load_build_server_config =
-    Dep.contents build_servers_config
-    *>>| fun contents ->
-    Sexp.of_string_conv_exn ~source:(File build_servers_config)
-      contents [%of_sexp: (string * Host_and_port.t) list]
-
   let depends_on_file_but_don't_care_about_changes path =
     Dep.action (Dep.path path *>>= fun () ->
                 return (Action.process ~dir:Path.the_root "/bin/true" []))
@@ -419,10 +449,8 @@ end = struct
     Rule.create ~targets:[checksum_path] (
       Dep.both
         (Metadata.load ~package:(basename dir))
-        (Dep.both
-           load_build_server_config
-           (load_package_deps ~dir))
-      *>>= fun (pkg, (cfg, pkg_deps)) ->
+        (load_package_deps ~dir)
+      *>>= fun (pkg, pkg_deps) ->
       let filter_deps packages =
         String.Set.of_list packages
         |> Set.elements
@@ -448,7 +476,7 @@ end = struct
                Dep.path (bin_checksum_path ~dir:(repo_path pkg) ~switch))
            ])
       *>>| fun () ->
-      let host_and_port = List.Assoc.find_exn cfg ~equal:String.equal switch in
+      let host_and_port = List.Assoc.find_exn build_servers ~equal:String.equal switch in
       Action.process ~dir:Path.the_root (Path.to_string build_repo)
         [ "build"
         ; "-host"; Host_and_port.host host_and_port
@@ -489,8 +517,8 @@ end = struct
         Dep.all_unit (List.map (String.split_lines s) ~f:(fun s ->
           Dep.path (root_relative s)))
         *>>| fun () ->
-        bashf ~dir:Path.the_root
-          !"%{quote} %{quote} -ocaml-bin %{quote}"
+        bashf ~dir:Path.the_root ~sandbox:Sandbox.hardlink
+          !"%{quote} %{quote} -ocaml-bin %{quote} -in-root"
           (Path.to_string create_tarball)
           (Path.to_string (Metadata.path ~package:pkg_name))
           Compiler_selection.compiler_bin_dir

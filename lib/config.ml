@@ -45,3 +45,5 @@ let emacs_prog = find_prog "emacs"
 let opam_prog = find_prog "opam"
 
 let extra_jane_kernel_ppx = []
+
+let public_release_build_servers_default = "()"

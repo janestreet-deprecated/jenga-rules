@@ -22,3 +22,5 @@ val hg_prog     : string
 val nodejs_prog : string
 val emacs_prog  : string
 val opam_prog   : string
+
+val public_release_build_servers_default : string
