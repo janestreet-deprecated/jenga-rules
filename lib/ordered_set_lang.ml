@@ -10,7 +10,7 @@ let eval t ~special_values =
       begin match String.chop_prefix s ~prefix:":" with
       | None -> [s]
       | Some name ->
-        match List.Assoc.find special_values name with
+        match List.Assoc.find special_values name ~equal:String.equal with
         | Some l -> l
         | None -> failwithf "undefined symbol %s" s ()
       end

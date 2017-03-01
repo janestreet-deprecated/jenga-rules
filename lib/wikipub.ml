@@ -9,11 +9,12 @@ let interpret_files ~dir files ~k =
   match files with
   | `Files l -> k l
   | `Standard_formats ->
-    Scheme.glob (Glob.create ~dir "*.{org,md}") (fun l -> k (List.map ~f:Path.basename l))
+    Scheme.glob (Glob.create ~dir "*.{org,md,mkd}") (fun l ->
+      k (List.map ~f:Path.basename l))
 
 let interpret_files_as_paths ~dir = function
   | `Files l -> return (List.map l ~f:(relative ~dir))
-  | `Standard_formats -> Dep.glob_listing (Glob.create ~dir "*.{org,md}")
+  | `Standard_formats -> Dep.glob_listing (Glob.create ~dir "*.{org,md,mkd}")
 
 let rules_for_individual_files ~dir files =
   interpret_files ~dir files ~k:(fun files ->

@@ -613,7 +613,8 @@ module Unified_tests = struct
     { target : string [@default "runtest"]
     ; deps : Dep_conf.t list
     ; setup_script : String_with_vars.t sexp_option
-    ; uses_catalog : Uses_catalog.t [@default No];
+    ; sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink]
+    ; uses_catalog : Uses_catalog.t [@default No]
     }
   [@@deriving of_sexp]
 end

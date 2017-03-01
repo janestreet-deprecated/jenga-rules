@@ -1,7 +1,7 @@
 (* This file is shared between jenga/root.ml and public-release/bin. Jenga passes the
    metadata by writing a .sexp file. *)
 
-open Core.Std
+open Core
 open! String.Replace_polymorphic_compare
 
 let opam_of_ocamlfind s =

@@ -8,7 +8,9 @@ type t =
   { target : string
   ; deps : unit Dep.t list
   ; setup_script : string option
+  ; sandbox : Sandbox.t
   ; uses_catalog : Jbuild_types.Uses_catalog.t
+  ; runtime_deps_alias : Alias.t
   }
 
 val rules : dir:Path.t -> t -> Rule.t list

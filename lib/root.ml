@@ -831,9 +831,19 @@ let gen_renaming_file ~dir ~libname ~modules ~internal =
   let ml_text =
     String.concat ~sep:"\n" (List.map modules ~f:(fun name ->
       let prefixed_name = PN.of_barename ~wrapped ~libname name in
-      sprintf "module %s = %s"
-        (String.capitalize (BN.to_string name))
-        (String.capitalize (PN.to_string prefixed_name))
+      let lib_module = LN.to_module libname in
+      let short_module = BN.to_module name in
+      let prefixed_module = PN.to_module prefixed_name in
+      if internal then (
+        sprintf "\n(** @canonical %s.%s *)\n\
+                 module %s = %s"
+          lib_module short_module
+          short_module prefixed_module
+      ) else (
+        (* Make the alias go through the internal file so the canonical applies. *)
+        sprintf "module %s = %s.%s"
+          short_module (internal_intf_of_lib_module ~libname) short_module
+      )
     ))
   in
   (* [No_such_module] is a name for a module that (hopefully) doesn't exist,
@@ -852,7 +862,7 @@ let gen_renaming_file ~dir ~libname ~modules ~internal =
         (String.concat ~sep:"\n" (List.map modules ~f:(fun name ->
            let prefixed_name = PN.of_barename ~wrapped ~libname name in
            sprintf "  module %s = No_such_module"
-             (String.capitalize (PN.to_string prefixed_name))
+             (PN.to_module prefixed_name)
          )))
     else ""
   in
@@ -873,15 +883,18 @@ let read_or_create_cmi v ml_suf =
 
 let compile_renaming (module Mode : Ocaml_mode.S) ~libname ~dir ~internal =
   (* Special compile rule for renaming file: [mylib.ml-gen]. *)
-  let name =
-    BN.of_string (if internal then internal_intf_of_lib ~libname
-                  else LN.to_string libname) in
+  let internal_name = BN.of_string (internal_intf_of_lib ~libname) in
+  let name = if internal then internal_name else BN.of_libname libname in
   let suffixed = BN.suffixed ~dir name in
   let ml_gen = suffixed dash_ml_gen in
   let cmi = suffixed ".cmi" in
   let cmt = suffixed ".cmt" in
   let targets = List.map ~f:suffixed Mode.cmx_and_o in
-  let deps = [Dep.path ml_gen] in
+  let deps =
+    Dep.path ml_gen
+    :: (if internal then []
+        else [ Dep.path (BN.suffixed ~dir internal_name ".cmi") ])
+  in
   let more_targets, more_deps, bin_annot_flag, cmi_action =
     match Mode.which with
     | `Native -> (cmi :: if bin_annot then [cmt] else []), [], Top.bin_annot_flag, `Create
@@ -1765,7 +1778,7 @@ let expanded_to_action ~sandbox ~timeout ~uses_catalog ~dir (t : string User_act
     let process =
       (* timeout should be the outermost wrapper, in case catalog gets stuck *)
       Action.bash_process ~dir ~cmd
-      |> Catalog_wrapper.wrap uses_catalog ~can_assume_env_is_setup:true
+      |> Catalog_sandbox.wrap uses_catalog ~can_assume_env_is_setup:true
       |> wrap_timeout timeout
     in
     Action.process ?sandbox ~dir:process.dir process.prog process.args
@@ -1780,7 +1793,7 @@ let rule_conf_to_rule ~dir artifacts conf =
   in
   Rule.create ~targets:(List.map targets ~f:(relative ~dir)) (
     Dep.both
-      (Dep.all_unit ((Catalog_wrapper.deps uses_catalog) @
+      (Dep.all_unit ((Catalog_sandbox.deps uses_catalog) @
                      (Dep.path time_limit :: Dep_conf_interpret.list_to_depends ~dir deps)))
       action
     *>>| fun ((), action) -> action
@@ -1800,7 +1813,7 @@ let alias_conf_to_rule ~dir ~artifacts conf =
     match action with
     | None -> deps
     | Some action ->
-      [Dep.action (Dep.both (Dep.all_unit (Catalog_wrapper.deps uses_catalog
+      [Dep.action (Dep.both (Dep.all_unit (Catalog_sandbox.deps uses_catalog
                                            @ (Dep.path time_limit :: deps))) action
                    *>>| fun ((), action) -> action)]
   in
@@ -2132,7 +2145,6 @@ module MC = struct
     exists_ml : bool;
     exists_mli : bool;
     wrapped : bool;
-    must_be_sharable : bool;
     findlib_include_flags : string list Findlib.Query.t;
   }
 end
@@ -2544,7 +2556,32 @@ let conditional = function
   | true -> fun x -> [x]
   | false -> fun _ -> []
 
-let compile_mli mc ~name =
+type deps_shared_across_lib =
+  { inferred_1step_deps : Lib_dep.t list Dep.t
+  ; inferred_1step_deps_cmi : unit Dep.t
+  ; inferred_1step_deps_cmi_maybe_cmx : unit Dep.t
+  }
+
+let deps_shared_across_lib libmap ~dir ~libname =
+  let inferred_1step_deps =
+    Dep.memoize ~name:"inferred_1step_deps"
+      (get_inferred_1step_deps libmap ~dir ~libname)
+  in
+  let ocaml_artifacts_of_1step_deps ~name ~suffixes =
+    Dep.memoize ~name
+      (inferred_1step_deps *>>= fun libs ->
+       Dep.group_dependencies (Dep.all_unit (LL.dep_on_ocaml_artifacts libs ~suffixes)))
+  in
+  { inferred_1step_deps
+  ; inferred_1step_deps_cmi =
+      ocaml_artifacts_of_1step_deps
+        ~name:".cmi of inferred_1step_deps" ~suffixes:[".cmi"]
+  ; inferred_1step_deps_cmi_maybe_cmx =
+      ocaml_artifacts_of_1step_deps
+        ~name:".cmi/maybe .cmx of inferred_1step_deps" ~suffixes:cmi_maybe_cmx
+  }
+
+let compile_mli mc ~name ~deps_shared_across_lib =
   let {MC. dc; dir; libname; wrapped; _ } = mc in
   let kind = MLI in
   let pp_deps = get_pp_deps ~mc in
@@ -2563,14 +2600,17 @@ let compile_mli mc ~name =
       ]
   in
   Rule.create ~targets (
-    get_inferred_1step_deps dc.libmap ~dir ~libname *>>= fun libs ->
-    let libdeps = LL.dep_on_ocaml_artifacts libs ~suffixes:[".cmi"] in
+    deps_shared_across_lib.inferred_1step_deps
+    *>>= fun libs ->
     let deps =
-      [Dep.path mli; local_dependencies `mli Ocaml_mode.byte dc ~wrapped ~libname name]
-      @ pp_deps @ libdeps
+      Dep.path mli
+      :: local_dependencies `mli Ocaml_mode.byte dc ~wrapped ~libname name
+      :: deps_shared_across_lib.inferred_1step_deps_cmi
+      :: pp_deps
     in
     let deps,open_renaming_args = open_renaming deps mc in
-    Findlib.Query.result_and mc.findlib_include_flags (Dep.both (Dep.all_unit deps) pp_args)
+    Findlib.Query.result_and mc.findlib_include_flags
+      (Dep.both (Dep.all_unit deps) pp_args)
     *>>| fun (external_include_flags, ((), pp_args)) ->
     Action.process
       ~dir
@@ -2588,11 +2628,8 @@ let compile_mli mc ~name =
       ])
   )
 
-let remove_nodynlink =
-  List.filter ~f:(fun x -> x <> "-nodynlink")
-
-let native_compile_ml mc ~name =
-  let {MC. dc; dir; libname; wrapped; exists_mli; must_be_sharable; _ } = mc in
+let native_compile_ml mc ~name ~deps_shared_across_lib =
+  let {MC. dc; dir; libname; wrapped; exists_mli; _ } = mc in
   let kind = ML in
   let pp_deps = get_pp_deps ~mc in
   let pp_args = get_pp_com_args ~kind ~mc ~name in
@@ -2604,7 +2641,6 @@ let native_compile_ml mc ~name =
   let cmx = PN.suffixed ~dir prefixed_name ".cmx" in
   let cmi = PN.suffixed ~dir prefixed_name ".cmi" in
   let flags = ocamlflags @ ocamloptflags in
-  let flags = if must_be_sharable then remove_nodynlink flags else flags in
   let targets =
     List.concat
       [ [cmx; o]
@@ -2618,18 +2654,19 @@ let native_compile_ml mc ~name =
       ]
   in
   Rule.create ~targets (
-    get_inferred_1step_deps dc.libmap ~dir ~libname *>>= fun libs ->
-    let libdeps = LL.dep_on_ocaml_artifacts libs ~suffixes:cmi_maybe_cmx in
+    deps_shared_across_lib.inferred_1step_deps
+    *>>= fun libs ->
     let deps =
-      [ Dep.path ml; local_dependencies `ml Ocaml_mode.native dc ~wrapped ~libname name ]
-      @ pp_deps
-      @ libdeps
+      [ Dep.path ml
+      ; local_dependencies `ml Ocaml_mode.native dc ~wrapped ~libname name
+      ; deps_shared_across_lib.inferred_1step_deps_cmi_maybe_cmx
+      ] @ pp_deps
+        @ if exists_mli
+          then [ Dep.path cmi
+               ; local_dependencies `mli Ocaml_mode.native dc ~wrapped ~libname name ]
+          else []
+
     in
-    let deps =
-      if exists_mli
-      then deps @ [ Dep.path cmi
-                  ; local_dependencies `mli Ocaml_mode.native dc ~wrapped ~libname name ]
-      else deps in
     let deps,open_renaming_args = open_renaming deps mc in
     Findlib.Query.result_and mc.findlib_include_flags (Dep.both (Dep.all_unit deps) pp_args)
     *>>| fun (external_include_flags, ((),pp_args)) ->
@@ -2650,7 +2687,7 @@ let native_compile_ml mc ~name =
       ])
   )
 
-let byte_compile_ml mc ~name =
+let byte_compile_ml mc ~name ~deps_shared_across_lib =
   let {MC. dc; dir; libname; wrapped; exists_mli; _ } = mc in
   let kind = ML in
   let pp_deps = get_pp_deps ~mc in
@@ -2670,18 +2707,18 @@ let byte_compile_ml mc ~name =
     [ cmo ]
   in
   Rule.create ~targets (
-    get_inferred_1step_deps dc.libmap ~dir ~libname *>>= fun libs ->
-    let libdeps = LL.dep_on_ocaml_artifacts libs ~suffixes:[".cmi"] in
+    deps_shared_across_lib.inferred_1step_deps
+    *>>= fun libs ->
     let deps =
-      [ Dep.path ml;
-        local_dependencies `ml Ocaml_mode.byte dc ~wrapped ~libname name ]
-      @ pp_deps @ libdeps
-    in
-    let deps = deps @ [Dep.path cmi] in
-    let deps =
-      if exists_mli
-      then (local_dependencies `mli Ocaml_mode.byte dc ~wrapped ~libname name) :: deps
-      else deps
+      [ Dep.path ml
+      ; local_dependencies `ml Ocaml_mode.byte dc ~wrapped ~libname name
+      ; deps_shared_across_lib.inferred_1step_deps_cmi
+      ; Dep.path cmi
+      ]
+      @ pp_deps
+      @ if exists_mli
+        then [ local_dependencies `mli Ocaml_mode.byte dc ~wrapped ~libname name ]
+        else []
     in
     let deps,open_renaming_args = open_renaming deps mc in
     Findlib.Query.result_and mc.findlib_include_flags (Dep.both (Dep.all_unit deps) pp_args)
@@ -2715,7 +2752,7 @@ let js_compile_cmo mc ~js_of_ocaml ~name =
     ~flags:js_of_ocaml.Js_of_ocaml_conf.flags
     ~src ~target
 
-let infer_mli_auto mc ~name =
+let infer_mli_auto mc ~name ~deps_shared_across_lib =
   let {MC. dc; dir; libname; wrapped; _ } = mc in
   let kind = ML in
   let pp_deps = get_pp_deps ~mc in
@@ -2725,12 +2762,16 @@ let infer_mli_auto mc ~name =
   let ml = BN.suffixed ~dir name ".ml" in
   let mli_auto = BN.suffixed ~dir name ".mli.auto" in
   Rule.create ~targets:[mli_auto] (
-    get_inferred_1step_deps dc.libmap ~dir ~libname *>>= fun libs ->
-    let libdeps = LL.dep_on_ocaml_artifacts libs ~suffixes:[".cmi"] in
+    deps_shared_across_lib.inferred_1step_deps
+    *>>= fun libs ->
     let deps =
-      [Dep.path ml; local_dependencies `ml Ocaml_mode.byte dc ~wrapped ~libname name]
-      @ pp_deps @ libdeps in
-    let deps,open_renaming_args = open_renaming deps mc in
+      [ Dep.path ml
+      ; local_dependencies `ml Ocaml_mode.byte dc ~wrapped ~libname name
+      ; deps_shared_across_lib.inferred_1step_deps_cmi
+      ]
+      @ pp_deps
+    in
+    let deps, open_renaming_args = open_renaming deps mc in
     Findlib.Query.result_and mc.findlib_include_flags (Dep.both (Dep.all_unit deps) pp_args)
     *>>| fun (external_include_flags, ((), pp_args)) ->
     Bash.action ~dir [
@@ -2772,9 +2813,10 @@ let setup_ml_compile_rules
   let names_spec_has_intf = mem_of_list names_spec_intfs in
   let lookup_pp = unstage (lookup_pp dc ~default_pp ~preprocess_spec) in
   let actual_modules = lazy (BN.Set.of_list (dc.impls @ dc.intfs)) in
+  let deps_shared_across_lib = deps_shared_across_lib dc.libmap ~dir ~libname in
   let findlib_include_flags =
     Findlib.include_flags ~dir (LN.to_string libname)
-      (get_inferred_1step_deps dc.libmap ~dir ~libname)
+      deps_shared_across_lib.inferred_1step_deps
   in
   let mc name : MC.t =
     {
@@ -2787,7 +2829,6 @@ let setup_ml_compile_rules
       exists_ml  = names_spec_has_impl name;
       exists_mli = names_spec_has_intf name;
       wrapped;
-      must_be_sharable = false;
       findlib_include_flags;
     }
   in
@@ -2821,15 +2862,15 @@ let setup_ml_compile_rules
              generate_pp mc ~kind:ML ~name;
              javascript_rule;
              [ gen_dfile ML ~disallowed_module_dep mc ~name ~actual_modules;
-               byte_compile_ml mc ~name;
-               native_compile_ml mc ~name;
-               infer_mli_auto mc ~name];
+               byte_compile_ml mc ~name ~deps_shared_across_lib;
+               native_compile_ml mc ~name ~deps_shared_across_lib;
+               infer_mli_auto mc ~name ~deps_shared_across_lib];
            ]
            else []);
           (if exists_mli then List.concat [
              generate_pp mc ~kind:MLI ~name;
              [gen_dfile MLI ~disallowed_module_dep mc ~name ~actual_modules;
-              compile_mli mc ~name;]
+              compile_mli mc ~name ~deps_shared_across_lib;]
            ] else []);
         ]
     )
@@ -4258,7 +4299,7 @@ let inline_tests_script_rule
              the same behavior whether jenga runs the tests or people run the test, which
              is why we pass ~can_assume_env_is_setup. *)
           let r =
-            Catalog_wrapper.wrap uses_catalog
+            Catalog_sandbox.wrap uses_catalog
               ~can_assume_env_is_setup:false
               { prog = "./inline_tests_runner.exe"; args = []; dir }
           in
@@ -4315,7 +4356,7 @@ let run_inline_action ~dir ~uses_catalog ~user_deps ~exe_deps ~flags ~runtime_de
   (Dep.all_unit (List.map (time_limit :: sources) ~f:Dep.path
                  @ runtime_deps
                  @ Dep_conf_interpret.list_to_depends ~dir user_deps
-                 @ Catalog_wrapper.deps uses_catalog
+                 @ Catalog_sandbox.deps uses_catalog
                 )
    *>>| fun () ->
    let args =
@@ -4453,7 +4494,7 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
            | Some names ->
              Dep.all_unit (names
                            @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
-                           @ Catalog_wrapper.deps user_config.uses_catalog)
+                           @ Catalog_sandbox.deps user_config.uses_catalog)
          ]
        :: match alias_for_inline_runners ~dir ~skip_from_default with
           | None -> []
@@ -5055,14 +5096,11 @@ let library_rules dc ~dir library_conf =
   let lib_in_the_tree = Library_conf.to_lib_in_the_tree ~dir library_conf in
   let odoc_dir = relative ~dir:Odoc.odoc_output_dir (LN.to_string libname) in
   let html_dir = relative ~dir:Odoc.html_output_dir (LN.to_string libname) in
-  let odoc_serve_script, odoc_serve_script_rule =
-    Odoc.generate_http_server ~src_dir:dir ~odoc_html_dir:html_dir libname
-  in
   let doc_alias =
     Rule.alias (Odoc.alias ~dir)
       [ Dep.alias (Odoc.alias ~dir:odoc_dir)
       ; Dep.alias (Odoc.alias ~dir:html_dir)
-      ; Dep.path odoc_serve_script ]
+      ]
   in
   List.concat [
     [gen_interface_deps_from_objinfo dc ~dir ~wrapped ~libname ~libraries_written_by_user];
@@ -5087,7 +5125,7 @@ let library_rules dc ~dir library_conf =
       ~user_config:(Library_conf_interpret.inline_tests library_conf);
     js_rules;
     inline_bench_rules dc ~skip_from_default ~lib_in_the_tree;
-    [doc_alias; odoc_serve_script_rule];
+    [doc_alias];
   ]
 
 let enforce_style ~dir ({ exceptions } : Enforce_style_conf.t) =
@@ -5165,7 +5203,9 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
             { target = conf.target
             ; setup_script = Option.map conf.setup_script ~f:(expand_vars ~dir)
             ; deps = Dep_conf_interpret.list_to_depends ~dir conf.deps
+            ; sandbox = if sandbox_rules then conf.sandbox else Sandbox.default
             ; uses_catalog = conf.uses_catalog
+            ; runtime_deps_alias = Alias.runtime_deps_of_tests ~dir
             }
         )
       | `toplevel_expect_tests conf ->
@@ -5377,7 +5417,7 @@ module Boot = struct
   ]
 
   let setup_dir ~dir =
-    match List.Assoc.find boots (Path.basename dir) with
+    match List.Assoc.find boots ~equal:String.equal (Path.basename dir) with
     | Some mk_scheme -> mk_scheme ~dir
     | None -> Scheme.rules []
 
@@ -5666,7 +5706,8 @@ let scheme ~dir =
                   Lib_clients.Cache.rule ~libmap_dep:Libmap_sexp.get;
                   alias_dot_filename_hack ~dir Lib_clients.Cache.file;
                   top_api_rule;
-                  self_contained_projections ~dir "base-is-self-contained" ["base"];
+                  self_contained_projections ~dir
+                    "critical_path_general-is-self-contained" ["critical_path_general"];
                   public_release_files_rule;
                   alias_dot_directory_hack ~dir Boot.dot_boot;
                 ];
@@ -5690,10 +5731,12 @@ let scheme ~dir =
               Artifacts_store_sexp.get *>>| fun artifacts ->
               setup_ppx_cache ~dir ~artifacts
             )
+          else if Path.(=) dir Odoc.html_output_dir then
+            Scheme.rules [ Odoc.copy_css_rule ~dir ]
           else if Path.(=) parent_dir Odoc.odoc_output_dir then
             setup_odoc ~dir `Compile
           else if Path.(=) parent_dir Odoc.html_output_dir then
-            setup_odoc ~dir `Link
+            setup_odoc ~dir `Html
           else if Path.is_descendant ~dir:Js_of_ocaml.dot_js_dir dir then
             Scheme.dep (
               Artifacts_store_sexp.get *>>| fun artifacts ->

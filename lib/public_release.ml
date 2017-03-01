@@ -155,6 +155,26 @@ end = struct
         (Path.reach_from ~dir public_release_files)
         (Path.basename all_repos_file)
 
+    let all_jbuilds_path = relative ~dir:repos jbuilds_filename
+    let all_jbuilds =
+      Dep.contents all_jbuilds_path
+      *>>| fun s ->
+      List.map (String.split_lines s) ~f:Path.root_relative
+    let all_jbuilds_rule =
+      Rule.create ~targets:[all_jbuilds_path] (
+        Dep.contents all_repos_file
+        *>>= fun s ->
+        let all_packages =
+          List.map (String.split_lines s) ~f:Filename.basename
+        in
+        Dep.List.concat_map all_packages ~f:(fun package ->
+          dirs_exported_by_package ~package)
+        *>>| fun dirs ->
+        Action.save ~target:all_jbuilds_path
+          (String.concat ~sep:"\n"
+             (List.map dirs ~f:(fun dir ->
+                Path.to_string (Path.relative ~dir "jbuild")))))
+
     let create_package_map =
       Dep.contents all_repos_file
       *>>= fun s ->
@@ -301,7 +321,8 @@ end = struct
             (Alias.create ~dir:(Path.root_relative "public-release/bin") "DEFAULT")
         in
         List.concat
-          [ [ Rule.create ~targets:[package_map_file] create_package_map
+          [ [ all_jbuilds_rule
+            ; Rule.create ~targets:[package_map_file] create_package_map
             ; Rule.create ~targets:[all_repos_file  ] (create_all_repos_file ~dir)
             ; Rule.create ~targets:[public_libmap   ] create_public_libmap
             (* Note: the .tarballs alias here is invoked by hydra, don't change it! *)
@@ -318,6 +339,13 @@ end = struct
                   Dep.all_unit
                     (List.map paths ~f:(fun dir ->
                        Dep.path (Path.relative ~dir ".metadata.sexp")))
+                ]
+            ; Rule.alias (Alias.create ~dir "doc")
+                [ bins
+                ; all_jbuilds *>>= fun jbuilds ->
+                  Dep.all_unit
+                    (List.map jbuilds ~f:(fun dir ->
+                       Dep.alias (Alias.create ~dir "doc")))
                 ]
             ; Rule.alias (Alias.create ~dir "binaries")
                 (List.map opam_switches ~f:(fun sw ->

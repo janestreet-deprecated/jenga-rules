@@ -34,23 +34,32 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
       Map.add bns ~key:(PN.to_module bn) ~data:(bn, path)
     )
   in
+  let search_path_deps =
+    Dep.memoize ~name:"search-path-deps"
+      (Dep.group_dependencies
+         (Dep.all_unit
+            (List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir)))))
+  in
   let targets, rules =
     Map.fold bn_to_path ~init:([], []) ~f:(
       fun ~key:current_module ~data:(_, path) (targets, rules) ->
-        let target = Filename.chop_extension (Path.basename path) ^ ".odoc" in
-        let target = Path.relative ~dir target in
+        let target_basename = Filename.chop_extension (Path.basename path) ^ ".odoc" in
+        let target = Path.relative ~dir target_basename in
         let rule =
           Rule.create ~targets:[target] (
-            Dep.action_stdout
-              (Dep.path path *>>| fun () ->
-               Action.process ~dir odoc_path ["compile-deps"; Path.reach_from ~dir path])
+            Dep.action_stdout (
+              Dep.path path *>>| fun () ->
+              bashf ~ignore_stderr:true ~dir
+                !"%{quote} compile-deps %{quote} | { grep \"^%s\" || true; }"
+                odoc_path (Path.reach_from ~dir path) (LN.to_module libname)
+            )
             *>>= fun deps_stdout ->
             let deps =
               Dep.path path ::
               List.filter_map (String.split_lines deps_stdout) ~f:(fun line ->
                 let this_module, digest_hex = String.lsplit2_exn line ~on:' ' in
-                if current_module = this_module
-                then None
+                if current_module = this_module then
+                  None
                 else
                   let _digest = Digest.from_hex digest_hex in
                   match Map.find bn_to_path this_module with
@@ -58,11 +67,7 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
                   | Some (bn, _) -> Some (Dep.path @@ PN.suffixed ~dir bn ".odoc")
               )
             in
-            Dep.all_unit
-              (List.concat
-                 [ deps
-                 ; List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir))
-                 ])
+            Dep.all_unit (search_path_deps :: deps)
             *>>| fun () ->
             (* We run the process from the parent directory as the file will be
                written in a "pkg" subdirectory of the directory where odoc is
@@ -70,54 +75,51 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
             Action.process ~ignore_stderr:true ~dir:(Path.dirname dir) odoc_path (
               [ "compile"; "--pkg"; LN.to_string libname ]
               @ dash_Is ~dir:(Path.dirname dir) (dir :: search_paths)
-              @ [Path.reach_from ~dir:(Path.dirname dir) path]
+              @ [ "-o"; Path.reach_from ~dir:(Path.dirname dir) target
+                ; Path.reach_from ~dir:(Path.dirname dir) path ]
             )
           )
         in
         target :: targets, rule :: rules
     )
   in
-  Rule.alias (alias ~dir) (List.map targets ~f:Dep.path) :: rules
+  Rule.alias (alias ~dir) (List.map targets ~f:Dep.path) ::
+  rules
 
-let link_targets_file_of_input ~dir input =
+let html_targets_file_of_input ~dir input =
   let basename = Filename.chop_extension (Path.basename input) in
   Path.relative ~dir (basename ^ ".odoc-targets")
 
-let link_deps ~dir path =
+let html_deps ~dir path =
   Dep.path path
   *>>| fun () ->
-  Action.process ~dir odoc_path ["link-deps"; Path.reach_from ~dir path]
+  Action.process ~ignore_stderr:true ~dir odoc_path ["html-deps"; Path.reach_from ~dir path]
 
-let link_rules_deps ~dir ~inputs_as_module_map ~search_paths input =
-  Dep.action_stdout (link_deps ~dir input)
-  *>>= fun out ->
-  let unit_deps = String.split_lines out in
-  let deps =
-    Dep.path input ::
-    List.filter_map unit_deps ~f:(fun this_module ->
-      match Map.find inputs_as_module_map this_module with
-      | None -> None
-      | Some path -> Some (Dep.path path))
-  in
-  let common_deps =
-    List.concat
-      [ deps
-      ; List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir))
-      ]
-  in
-  Dep.all_unit common_deps
+let _html_rules_deps ~dir ~search_paths input =
+  Dep.action_stdout (html_deps ~dir input)
+  *>>| fun out ->
+  let package_deps = String.(Set.of_list @@ split_lines out) in
+  List.unzip @@ List.filter_map search_paths ~f:(fun dir ->
+    if Set.mem package_deps (basename dir) then
+      Some (dir, Dep.alias (alias ~dir))
+    else
+      None
+  )
 
-let odoc_link_targets_rule ~dir ~search_paths ~inputs_as_module_map ~odoc_dir input =
-  let target = link_targets_file_of_input ~dir input in
+let _odoc_html_targets_rule ~dir ~search_paths input =
+  let target = html_targets_file_of_input ~dir input in
   Rule.create ~targets:[target] (
     Dep.action_stdout (
       (* might be too many dependencies, but at least we know we're not missing any
          since actually producing the html files requires no more than this *)
-      link_rules_deps ~dir ~inputs_as_module_map ~search_paths input
+      _html_rules_deps ~dir ~search_paths input
+      *>>= fun (include_paths, aliases) ->
+      let dir = dirname dir in
+      Dep.all_unit aliases
       *>>| fun () ->
       Action.process ~ignore_stderr:true ~dir odoc_path (
         ["html-targets"]
-        @ dash_Is ~dir (odoc_dir :: search_paths)
+        @ dash_Is ~dir include_paths
         @ ["-o"; "."; Path.reach_from ~dir input]
       )
     )
@@ -125,8 +127,9 @@ let odoc_link_targets_rule ~dir ~search_paths ~inputs_as_module_map ~odoc_dir in
     Action.save out ~target
   )
 
-let odoc_link_rules ~dir ~search_paths ~libname =
+let odoc_html_rules ~dir ~search_paths ~libname =
   let odoc_dir = Path.relative ~dir:odoc_output_dir (LN.to_string libname) in
+  let search_paths = odoc_dir :: search_paths in
   Dep.glob_listing (Glob.create ~dir:odoc_dir "*.odoc")
   *>>| fun inputs ->
   let inputs_as_module_map =
@@ -134,69 +137,99 @@ let odoc_link_rules ~dir ~search_paths ~libname =
       (List.map inputs ~f:(fun path ->
          String.capitalize (Filename.chop_extension (Path.basename path)), path))
   in
+  let search_paths_deps =
+    Dep.memoize ~name:"search-paths-deps"
+      (Dep.group_dependencies
+         (Dep.all_unit
+            (List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir)))))
+  in
   let targets, rules =
     List.fold inputs ~init:([], []) ~f:(fun (archives, rules) input ->
       let archive = Filename.chop_extension (Path.basename input) ^ ".tgz" in
+      let archive_path = Path.relative ~dir archive in
+      let input_html_dir_path =
+        Filename.chop_extension (Path.basename input)
+        |> String.capitalize
+        |> Path.relative ~dir
+      in
       let rule =
-        Rule.create ~targets:[Path.relative ~dir archive] (
-          let targets_file = link_targets_file_of_input ~dir input in
-          Dep.both
-            (link_rules_deps ~dir ~inputs_as_module_map ~search_paths input)
-            (Dep.path targets_file)
-          *>>| fun ((), ()) ->
+        Rule.create ~targets:[archive_path] (
+          (*
+          html_rules_deps ~dir ~search_paths input
+          *>>= fun (include_paths, aliases) ->
+          *)
+          search_paths_deps
+          *>>| fun () ->
+          let dir = dirname dir in
           bashf ~ignore_stderr:true ~dir
-            !"%{quote} html %{concat_quoted} -o . %{quote} && tar -czf %{quote} -T %{quote}"
+            !"%{quote} html %{concat_quoted} -o . %{quote} \
+              --closed-details && tar -czf %{quote} %{quote}"
             odoc_path
-            (dash_Is ~dir (odoc_dir :: search_paths))
+            (dash_Is ~dir search_paths)
             (reach_from ~dir input)
-            archive
-            (reach_from ~dir targets_file)
+            (reach_from ~dir archive_path)
+            (* (reach_from ~dir targets_file) *)
+            (reach_from ~dir input_html_dir_path)
         )
       in
-      (Path.relative ~dir archive :: archives,
-       odoc_link_targets_rule ~dir ~search_paths ~inputs_as_module_map ~odoc_dir
-         input :: rule :: rules)
+      (archive_path :: archives,
+       (* odoc_html_targets_rule ~dir ~search_paths ~odoc_dir input :: *)
+       rule :: rules)
     )
   in
-  let css_target, copy_css =
-    let target = Path.relative ~dir "odoc.css" in
-    let rule =
-      Rule.simple ~targets:[target] ~deps:[]
-        ~action:(Action.process ~dir odoc_path [ "css"; "-o"; "." ])
+  let css_target = Path.relative ~dir:(dirname dir) "odoc.css" in
+  let sln = LN.to_module libname in
+  let index_target, index_rule, mld_rule =
+    let target = Path.relative ~dir "index.html" in
+    let mld_file = Path.relative ~dir (sln ^ ".mld") in
+    let mld_file_content, mld_deps =
+      if Map.mem inputs_as_module_map (sln ^ "__") then (
+        (* [Foo__] present means [Foo] was written by the user, link to that. *)
+        sprintf "The entry point for this library is module {!module:%s}." sln,
+        [Map.find_exn inputs_as_module_map sln]
+      ) else
+        match Map.find inputs_as_module_map (sln ^ "__Std") with
+        | Some path ->
+          sprintf "The entry point for this library is module {!module:%s.Std}." sln,
+          [path]
+        | None ->
+          sprintf "This library doesn't follow the usual convention.\n\
+                   Here are the modules it exposes: {!modules: %s}"
+            (String.concat ~sep:" " (Map.keys inputs_as_module_map)),
+          Map.data inputs_as_module_map
     in
-    target, rule
+    let mld_file_content =
+      sprintf "{%%html:<nav><a href=\"..\">Up</a></nav>%%}\n\
+               {1 Library %s}\n%s"
+        sln mld_file_content
+    in
+    let mld_rule =
+      Rule.simple ~targets:[mld_file] ~deps:[] ~action:(
+        Action.save mld_file_content ~target:mld_file
+      )
+    in
+    let index_rule =
+      Rule.simple ~targets:[target] ~deps:(List.map ~f:Dep.path (mld_file :: mld_deps)) ~action:(
+        Action.process ~ignore_stderr:true ~dir:(Path.dirname dir) odoc_path
+          [ "html"; "-o"; "."
+          ; "-I"; Path.reach_from ~dir:(Path.dirname dir) odoc_dir
+          ; "--index-for"; Path.basename dir
+          ; Path.reach_from ~dir:(Path.dirname dir) mld_file
+          ]
+      )
+    in
+    target, index_rule, mld_rule
   in
-  Rule.alias (alias ~dir) (List.map (css_target :: targets) ~f:Dep.path)
-  :: copy_css :: rules
+  Rule.alias (alias ~dir)
+    (List.map (css_target :: index_target :: targets) ~f:Dep.path)
+  :: index_rule
+  :: mld_rule
+  :: rules
 
-let generate_http_server ~src_dir ~odoc_html_dir libname =
-  let script =
-    sprintf !{|#!/bin/bash
-cd "$(dirname "${BASH_SOURCE[0]}")"/%{quote}
-python -m SimpleHTTPServer ${1-8000} &
-server_pid=$!
-
-function kill_server() {
-  kill $server_pid 2> /dev/null
-  exit 0
-}
-
-trap kill_server INT
-echo "Go to http://$(hostname):${1-8000}/%s/%s"
-while true; do
-  sleep 10000
-done
-|}
-      (Path.reach_from ~dir:src_dir html_output_dir)
-      (LN.to_string libname)
-      (LN.to_module libname)
-  in
-  let target = Path.relative ~dir:src_dir "serve_doc" in
-  target, Rule.create ~targets:[target] (
-    Dep.alias (alias ~dir:odoc_html_dir)
-    *>>| fun () ->
-    Action.save ~chmod_x:() script ~target
-  )
+let copy_css_rule ~dir =
+  let target = Path.relative ~dir "odoc.css" in
+  Rule.simple ~targets:[target] ~deps:[]
+    ~action:(Action.process ~ignore_stderr:true ~dir odoc_path [ "css"; "-o"; "." ])
 
 let setup ~dir ~lib_in_the_tree:(lib:Lib_in_the_tree.t) ~lib_deps step =
   lib_deps *>>= fun libraries ->
@@ -213,13 +246,13 @@ let setup ~dir ~lib_in_the_tree:(lib:Lib_in_the_tree.t) ~lib_deps step =
   match step with
   | `Compile ->
     odoc_compile_rules ~dir ~search_paths ~libname:lib.name ~remote_dir:lib.source_path
-  | `Link ->
+  | `Html ->
     let html_aliases_for_deps =
       List.map libraries ~f:(fun l ->
         Dep.alias
           (alias ~dir:(Path.relative ~dir:html_output_dir (LN.to_string l)))
       )
     in
-    odoc_link_rules ~dir ~search_paths ~libname:lib.name
+    odoc_html_rules ~dir ~search_paths ~libname:lib.name
     *>>| fun rules ->
     Rule.alias (alias ~dir) html_aliases_for_deps :: rules

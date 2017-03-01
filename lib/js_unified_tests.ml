@@ -5,7 +5,9 @@ type t =
   { target : string
   ; deps : unit Dep.t list
   ; setup_script : string option
+  ; sandbox : Sandbox.t
   ; uses_catalog : Jbuild_types.Uses_catalog.t
+  ; runtime_deps_alias : Alias.t
   }
 
 let ocaml_style_varname = "UNIFIED_TESTS_OCAML_STYLE_ERRORS"
@@ -15,7 +17,7 @@ let ocaml_style = Var.peek_register_bool ocaml_style_varname
 let ascii_diffs_varname = "UNIFIED_TESTS_ASCII_DIFFS"
 let ascii_diffs = Var.peek_register_bool ascii_diffs_varname ~default:false
 
-let rules ~dir { target; deps; setup_script; uses_catalog } =
+let rules ~dir { target; deps; setup_script; sandbox; uses_catalog; runtime_deps_alias } =
   let script_basename = "run-unified-tests" in
   let script = Path.relative ~dir script_basename in
   let unified_tests_script, unified_tests_script_runtime_deps =
@@ -25,7 +27,7 @@ let rules ~dir { target; deps; setup_script; uses_catalog } =
   let run_the_tests =
     let { Action. prog; args; dir = dir' } =
       let prog = Path.reach_from ~dir unified_tests_script in
-      Catalog_wrapper.wrap uses_catalog ~can_assume_env_is_setup:false
+      Catalog_sandbox.wrap uses_catalog ~can_assume_env_is_setup:false
          { prog; dir; args = [] }
     in
     assert (Path.(=) dir dir');
@@ -57,19 +59,22 @@ export %s=%{Bool}
   let create_script_by_default =
     Rule.alias (Alias.create ~dir "DEFAULT") [ Dep.path script ]
   in
-  let rule_to_run_script =
-    let common_deps =
-      List.concat
-        [ [ Dep.path script
-          ; Dep.alias unified_tests_script_runtime_deps
-          ]
-        ; (match setup_script with
-           | None -> []
-           | Some setup_script -> [Dep.path (Path.relative ~dir setup_script)])
-        ; deps
-        ; Catalog_wrapper.deps uses_catalog
+  let common_runtime_deps =
+    List.concat
+      [ [ Dep.path script
+        ; Dep.alias unified_tests_script_runtime_deps
         ]
-    in
+      ; (match setup_script with
+         | None -> []
+         | Some setup_script -> [Dep.path (Path.relative ~dir setup_script)])
+      ; deps
+      ; Catalog_sandbox.deps uses_catalog
+      ]
+  in
+  let rule_of_runtime_deps_alias =
+    Rule.alias runtime_deps_alias common_runtime_deps
+  in
+  let rule_to_run_script =
     Rule.alias (Alias.create ~dir target) [
       Dep.glob_listing (Glob.create ~dir "*.t") *>>= fun t_files ->
       Dep.all_unit
@@ -84,10 +89,14 @@ export %s=%{Bool}
                  !"unified-test %{quote} doesn't obey test naming rule: test-[^~]*\\.t"
                  test_name ());
            Dep.action
-             (Dep.all_unit (Dep.path t_file :: common_deps)
+             (Dep.all_unit (Dep.path t_file :: common_runtime_deps)
               *>>| fun () ->
-              bashf ~dir !"./%{quote} %{quote}" script_basename test_name)))
+              Action.process ~sandbox ~dir ("./" ^ script_basename) [ test_name ])))
     ]
   in
-  [ rule_to_create_script; create_script_by_default; rule_to_run_script ]
+  [ rule_to_create_script
+  ; create_script_by_default
+  ; rule_to_run_script
+  ; rule_of_runtime_deps_alias
+  ]
 ;;
