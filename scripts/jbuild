@@ -8,6 +8,6 @@
     (generate_static_string_c_code.sh as scripts/generate_static_string_c_code.sh)
     (link-quietly as scripts/link-quietly)
     (time_limit as scripts/time_limit)
-   ))))
+    ))))
 
 (jbuild_version jane_street)

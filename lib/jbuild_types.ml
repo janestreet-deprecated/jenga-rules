@@ -392,33 +392,6 @@ module Embed_conf = struct
   } [@@deriving of_sexp]
 end
 
-(* Filter "public_release" fields. We do this rather than having a [public_release :
-   Sexp.t sexp_list] field to remove one useless level of parentheses. It also allow to
-   have several (public_release ...) fields in case a specific final ordering makes more
-   sense.
-   The type of the extra fields is in app/jbuilder/src/jbuild_types.ml *)
-let filter_public_release t_of_sexp (sexp : Sexp.t) =
-  match sexp with
-  | Atom _ -> t_of_sexp sexp
-  | List l ->
-    let l =
-      List.filter l ~f:(fun sexp ->
-        match sexp with
-        | List (Atom "public_release" :: l) ->
-          if List.is_empty l then
-            of_sexp_error
-              "this public_release field is useless as it is empty, please remove it"
-              sexp;
-          false
-        | _ -> true)
-    in
-    let new_sexp = Sexp.List l in
-    try
-      t_of_sexp new_sexp
-    with Sexp.Of_sexp_error (exn, sub_sexp) when phys_equal new_sexp sub_sexp ->
-      raise (Sexp.Of_sexp_error (exn, sexp))
-;;
-
 module Library_conf = struct
   module External = struct
     (* Description of external libraries imported into Jane *)
@@ -536,7 +509,7 @@ module Library_conf = struct
   } [@@deriving of_sexp, fields]
 
   let t_of_sexp sexp =
-    let t = filter_public_release t_of_sexp sexp in
+    let t = t_of_sexp sexp in
     Inline_tests.validate t.inline_tests ~sexp
       ~has_js_of_ocaml:(Option.is_some t.js_of_ocaml);
     (match t.external_lib, t.public_name with
@@ -594,8 +567,6 @@ module Executables_conf = struct
     only_shared_object : bool [@default false];
     skip_from_default : bool [@default false];
   } [@@deriving of_sexp]
-
-  let t_of_sexp sexp = filter_public_release t_of_sexp sexp
 end
 
 module Jane_script_conf = struct
@@ -711,7 +682,6 @@ module Jbuild = struct
   | `public_repo of Public_repo.t
   | `html of Html_conf.t
   | `provides of Provides_conf.t sexp_list
-  | `public_release of Sexp.t sexp_list
 
   (* [enforce_style] opts in the [jbuild]'s directory to the requirement that (some of)
      the directory's files are correctly styled according to [bin/apply-style].
@@ -742,3 +712,58 @@ module Jbuild_with_if = struct
     | `if_ocaml_code_is_dynlinkable of If_ocaml_code_is_dynlinkable.t
   ] [@@deriving of_sexp]
 end
+
+(* Filter out (public_release ...) forms and inline (js_only ...) ones. Externally, we do
+   the opposite.
+
+   The type of the contents of the (public_release ...) forms is in
+   app/jbuilder/src/jbuild_types.ml *)
+let filtered_of_sexp t_of_sexp sexp =
+  (* To recover the location of a sub-sexp, we do a search using physical equality in
+     [sexp]. Since we modify the input sexp, we must keep track of all the
+     replacements. This is only used in case of error. *)
+  let substs = ref [] in
+  let rec filter_sexp (sexp : Sexp.t) =
+    match sexp with
+    | Atom _ -> sexp
+    | List l ->
+      let new_l = filter_sexps l in
+      if phys_equal new_l l then
+        sexp
+      else begin
+        let new_sexp = Sexp.List new_l in
+        substs := (sexp, new_sexp) :: !substs;
+        new_sexp
+      end
+  and filter_sexps (sexps : Sexp.t list) =
+    match sexps with
+    | [] -> []
+    | head :: tail ->
+      match head with
+      | List (Atom ":public_release_only" :: _) ->
+        filter_sexps tail
+      | List (Atom ":js_only" :: l) ->
+        l @ filter_sexps tail
+      | _ ->
+        let new_head = filter_sexp  head in
+        let new_tail = filter_sexps tail in
+        if phys_equal head new_head &&
+           phys_equal tail new_tail then
+          sexps
+        else
+          new_head :: new_tail
+  in
+  let new_sexps = filter_sexps [sexp] in
+  try
+    List.map new_sexps ~f:t_of_sexp
+  with Sexp.Of_sexp_error (exn, sub) ->
+    let sub =
+      List.find_map !substs ~f:(fun (old_sexp, new_sexp) ->
+        if phys_equal sub new_sexp then
+          Some old_sexp
+        else
+          None)
+      |> Option.value ~default:sub
+    in
+    raise (Sexp.Of_sexp_error (exn, sub))
+;;

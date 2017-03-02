@@ -758,7 +758,8 @@ end = struct
       Dep.contents jbuild
       *>>| fun contents ->
       Sexp.many_of_string_conv_exn ~source:(File jbuild)
-        contents [%of_sexp: Jbuild_with_if.t]
+        contents [%of_sexp: Jbuild_with_if.t filtered]
+      |> List.concat
       |> List.concat_map ~f:(function
         | #Jbuild.t as t -> [t]
         | `if_ocaml_code_is_dynlinkable { if_dynlinkable; if_not_dynlinkable } ->
@@ -783,7 +784,6 @@ end = struct
     | `provides _ -> []
     | `enforce_style _ -> []
     | `wikipub _ -> []
-    | `public_release _ -> []
 
   let provides : Jbuild.t -> Provides_conf.t list = function
     | `ocamllex _ -> []
@@ -803,7 +803,6 @@ end = struct
     | `provides l -> l
     | `enforce_style _ -> []
     | `wikipub _ -> []
-    | `public_release _ -> []
 
   let libs ~dir =
     load ~dir *>>| List.concat_map ~f:(the_real_libnames_for_libmap ~dir)
@@ -4630,7 +4629,6 @@ let ocaml_libraries : [< Jbuild.t ] -> _ = function
   | `provides _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
-  | `public_release _ -> []
 ;;
 
 let resolved_ocaml_libraries (dc : DC.t) jbuild =
@@ -4654,7 +4652,6 @@ let xlibnames : Jbuild.t -> _ = function
   | `provides _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
-  | `public_release _ -> []
 ;;
 
 let extra_disabled_warnings : Jbuild.t -> _ = function
@@ -4675,7 +4672,6 @@ let extra_disabled_warnings : Jbuild.t -> _ = function
   | `provides _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
-  | `public_release _ -> []
 ;;
 
 let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
@@ -4703,7 +4699,6 @@ let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
   | `provides _
   | `enforce_style _
   | `wikipub _
-  | `public_release _
     -> []
 
 let generate_dep_rules (dc : DC.t) ~dir jbuilds =
@@ -5214,7 +5209,6 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
       | `html conf -> Scheme.rules (Html.rules ~dir conf)
       | `enforce_style conf -> Scheme.rules (enforce_style ~dir conf)
       | `wikipub files -> Wikipub.rules_for_individual_files ~dir files
-      | `public_release _ -> Scheme.empty
     )
   )
 
@@ -5267,7 +5261,6 @@ let rules_without_directory_context ~dir jbuilds artifacts =
        | `provides _
        | `enforce_style _
        | `wikipub _
-       | `public_release _
          -> []))
 ;;
 
