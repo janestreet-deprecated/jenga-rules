@@ -5092,9 +5092,12 @@ let library_rules dc ~dir library_conf =
   let odoc_dir = relative ~dir:Odoc.odoc_output_dir (LN.to_string libname) in
   let html_dir = relative ~dir:Odoc.html_output_dir (LN.to_string libname) in
   let doc_alias =
-    Rule.alias (Odoc.alias ~dir)
-      [ Dep.alias (Odoc.alias ~dir:odoc_dir)
-      ; Dep.alias (Odoc.alias ~dir:html_dir)
+    if skip_from_default then []
+    else
+      [ Rule.alias (Odoc.alias ~dir)
+          [ Dep.alias (Odoc.alias ~dir:odoc_dir)
+          ; Dep.alias (Odoc.alias ~dir:html_dir)
+          ]
       ]
   in
   List.concat [
@@ -5120,7 +5123,7 @@ let library_rules dc ~dir library_conf =
       ~user_config:(Library_conf_interpret.inline_tests library_conf);
     js_rules;
     inline_bench_rules dc ~skip_from_default ~lib_in_the_tree;
-    [doc_alias];
+    doc_alias;
   ]
 
 let enforce_style ~dir ({ exceptions } : Enforce_style_conf.t) =
@@ -5671,18 +5674,46 @@ let setup_odoc ~dir step =
     Odoc.setup ~dir ~lib_in_the_tree:lib ~lib_deps step
   )
 
-let scheme ~dir =
+let scheme_of_generated_dirs ~dir =
+  let parent_dir = dirname dir in
+  if Path.(=) dir Boot.parent_dir then
+    Some (Boot.setup_parent_dir ~dir)
+  else if Path.(=) parent_dir Boot.parent_dir then
+    Some (Boot.setup_dir ~dir)
+  else if Path.(=) parent_dir LL.dir then
+    Some (setup_liblinks ~dir)
+  else if Path.(=) dir LL.dir then
+    Some (setup_liblinks_dir ~dir)
+  else if Path.(=) parent_dir ppx_cache_dir then
+    Some (Scheme.dep (
+      Artifacts_store_sexp.get *>>| fun artifacts ->
+      setup_ppx_cache ~dir ~artifacts
+    ))
+  else if Path.(=) dir Odoc.html_output_dir then
+    Some (Scheme.rules [ Odoc.copy_css_rule ~dir ])
+  else if Path.(=) parent_dir Odoc.odoc_output_dir then
+    Some (setup_odoc ~dir `Compile)
+  else if Path.(=) parent_dir Odoc.html_output_dir then
+    Some (setup_odoc ~dir `Html)
+  else if Path.is_descendant ~dir:Js_of_ocaml.dot_js_dir dir then
+    Some (Scheme.dep (
+      Artifacts_store_sexp.get *>>| fun artifacts ->
+      Js_of_ocaml.setup_dot_js_dir
+        ~artifacts:artifacts
+        ~sourcemap:javascript_sourcemap
+        ~devel:for_javascript_development
+        ~ocaml_where:ocaml_where_path dir
+    ))
+  else None
+
+let scheme_of_non_generated_dirs ~dir =
   (* Construct the rule scheme for given [dir] *)
   Scheme.all
     [ Scheme.sources [ relative ~dir Fe.dot_fe_sexp_basename
                      ; relative ~dir "jbuild"
                      ; relative ~dir "jbuild-ignore" ]
     ; begin
-      (* Never build or call [artifacts] within any subtree of an .hg, .git or .fe *)
-      if List.exists [".hg"; ".fe"; ".git"] ~f:(fun fn -> under fn dir)
-      then Scheme.empty
-      else
-        let common_rules_except_for_liblinks =
+        let common_rules =
           Scheme.all [
             setup_manifest ~dir;
             setup_recursive_aliases ~dir;
@@ -5707,54 +5738,24 @@ let scheme ~dir =
                 Findlib.global_rules;
               ]);
             Fe.setup_projections_targets;
-            common_rules_except_for_liblinks;
+            common_rules;
           ]
         else
-          let parent_dir = dirname dir in
-          if Path.(=) dir Boot.parent_dir then
-            Boot.setup_parent_dir ~dir
-          else if Path.(=) parent_dir Boot.parent_dir then
-            Boot.setup_dir ~dir
-          else if Path.(=) parent_dir LL.dir then
-            setup_liblinks ~dir
-          else if Path.(=) dir LL.dir then
-            setup_liblinks_dir ~dir
-          else if Path.(=) parent_dir ppx_cache_dir then
-            Scheme.dep (
-              Artifacts_store_sexp.get *>>| fun artifacts ->
-              setup_ppx_cache ~dir ~artifacts
-            )
-          else if Path.(=) dir Odoc.html_output_dir then
-            Scheme.rules [ Odoc.copy_css_rule ~dir ]
-          else if Path.(=) parent_dir Odoc.odoc_output_dir then
-            setup_odoc ~dir `Compile
-          else if Path.(=) parent_dir Odoc.html_output_dir then
-            setup_odoc ~dir `Html
-          else if Path.is_descendant ~dir:Js_of_ocaml.dot_js_dir dir then
-            Scheme.dep (
-              Artifacts_store_sexp.get *>>| fun artifacts ->
-              Js_of_ocaml.setup_dot_js_dir
-                ~artifacts:artifacts
-                ~sourcemap:javascript_sourcemap
-                ~devel:for_javascript_development
-                ~ocaml_where:ocaml_where_path dir
-            )
-          (* Otherwise, the directory is a normal "source" directory. *)
-          else
-            Scheme.dep (
-              is_ignored dir *>>| function
-              | true ->
-                (* Empty aliases that hydra can ask for .DEFAULT or .runtest even in ignored
-                   places. *)
-                empty_recursive_aliases ~dir
-              | false ->
-                Scheme.all [
-                  common_rules_except_for_liblinks;
-                  setup_main ~dir;
-                ]
-            )
+          Scheme.dep (
+            is_ignored dir *>>| function
+            | true ->
+              (* Empty aliases that hydra can ask for .DEFAULT or .runtest even in ignored
+                 places. *)
+              empty_recursive_aliases ~dir
+            | false ->
+              Scheme.all [
+                common_rules;
+                setup_main ~dir;
+              ]
+          )
       end
     ]
+;;
 
 let ocaml_bin_file ~prefix = "." ^ prefix ^ "ocaml-bin"
 let ocaml_bin_file_path ~prefix = root_relative (ocaml_bin_file ~prefix)
@@ -5808,20 +5809,28 @@ let root_only_scheme =
   ]
 
 let scheme ~dir =
-  (* Wrapper to force build of [ocaml_bin_file] at scheme setup time *)
-  Scheme.all [
-    (if Path.(=) dir Path.the_root then root_only_scheme else Scheme.empty);
-    Scheme.dep (
-      Dep.all_unit [ Dep.path (ocaml_bin_file_path ~prefix:"")
-                   ; Dep.path (ocaml_bin_file_path ~prefix:"omake-")
-                   ; if Config.public
-                     then Dep.return ()
-                     else Dep.path ocaml_version_file_output_path
-                   ]
-      *>>| fun () ->
-      scheme ~dir
-    )
-  ]
+  (* Never build or call [artifacts] within any subtree of an .hg, .git or .fe *)
+  if List.exists [".hg"; ".fe"; ".git"] ~f:(fun fn -> under fn dir)
+  then Scheme.empty
+  else
+    match scheme_of_generated_dirs ~dir with
+    | Some v -> v
+    | None ->
+      (* Wrapper to force build of [ocaml_bin_file] at scheme setup time *)
+      Scheme.all [
+        (if Path.(=) dir Path.the_root then root_only_scheme else Scheme.empty);
+        Scheme.dep (
+          Dep.all_unit [ Dep.path (ocaml_bin_file_path ~prefix:"")
+                       ; Dep.path (ocaml_bin_file_path ~prefix:"omake-")
+                       ; if Config.public
+                         then Dep.return ()
+                         else Dep.path ocaml_version_file_output_path
+                       ]
+          *>>| fun () ->
+          scheme_of_non_generated_dirs ~dir
+        )
+      ]
+;;
 
 let env () = Env.create
   ~putenv:(putenv ())
