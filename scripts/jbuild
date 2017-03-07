@@ -10,4 +10,4 @@
     (time_limit as scripts/time_limit)
     ))))
 
-(jbuild_version jane_street)
+(jbuild_version 1)
