@@ -601,6 +601,16 @@ end
 module Public_repo = struct
   module T = Public_release_types
 
+  type ascii_string = string
+
+  let ascii_string_of_sexp sexp =
+    let s = string_of_sexp sexp in
+    if String.exists s ~f:(fun ch -> Int.(>=) (Char.to_int ch) 128) then
+      of_sexp_error
+        "This field must contain only ASCII characters"
+        sexp;
+    s
+
   type t =
     { dirs                : (string * Import.Path.t) list
     ; copyright_start     : int
@@ -608,8 +618,8 @@ module Public_repo = struct
        for when we want to export a generated file. *)
     ; additional_files    : Import.Path.t sexp_list
     (* Extra items to install. The filenames are relative to the external repository. *)
-    ; synopsis            : string
-    ; description         : string
+    ; synopsis            : ascii_string
+    ; description         : ascii_string
     ; deps                : Dep_conf.t sexp_list
     ; hooks               : String_with_vars.t T.Package.Hooks.t
                               [@default T.Package.Hooks.none]
