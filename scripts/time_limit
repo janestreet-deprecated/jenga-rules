@@ -35,8 +35,10 @@ EOF
     echo '$' ps ufx '#' process is $mainpid
     ps ufx
     echo
-    echo "\$ strace -s500 -f -p $mainpid & { sleep 1; kill -INT \$! || { sleep 1; kill -KILL \$!; }; }"
-    strace -s500 -f -p $mainpid & { sleep 1; kill -INT $! || { sleep 1; kill -KILL $!; }; }
+    # We straight up use KILL on strace, for simplicity given that it shouldn't have any
+    # resources to release, and at least some of the times, it doesn't die on SIGINT.
+    echo "\$ strace -s500 -f -p $mainpid & { sleep 1; kill -KILL \$!; }"
+    strace -s500 -f -p $mainpid & { sleep 1; kill -KILL $!; }
     kill $mainpid
     sleep 2
     kill -KILL $mainpid 2> /dev/null

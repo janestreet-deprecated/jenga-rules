@@ -340,12 +340,12 @@ end = struct
                     (List.map paths ~f:(fun dir ->
                        Dep.path (Path.relative ~dir ".metadata.sexp")))
                 ]
-            ; Rule.alias (Alias.create ~dir "doc")
+            ; Rule.alias (Odoc.alias ~dir)
                 [ bins
                 ; all_jbuilds *>>= fun jbuilds ->
                   Dep.all_unit
-                    (List.map jbuilds ~f:(fun dir ->
-                       Dep.alias (Alias.create ~dir "doc")))
+                    (List.map jbuilds ~f:(fun jbuild ->
+                       Dep.alias (Odoc.alias ~dir:(Path.dirname jbuild))))
                 ]
             ; Rule.alias (Alias.create ~dir "binaries")
                 (List.map opam_switches ~f:(fun sw ->
@@ -538,18 +538,18 @@ end = struct
           :: Dep.path (Metadata.path ~package:pkg_name)
           :: Dep.path forbidden_regexps
           :: Dep.path Public_libmap.public_libmap
+          :: (Dep.contents files_to_copy
+              *>>= fun s ->
+              Dep.all_unit (List.map (String.split_lines s) ~f:(fun s ->
+                Dep.path (root_relative s))))
           :: deps_conf_to_deps ~dir conf.deps)
-        *>>= fun () ->
-        Dep.contents files_to_copy
-        *>>= fun s ->
-        Dep.all_unit (List.map (String.split_lines s) ~f:(fun s ->
-          Dep.path (root_relative s)))
         *>>| fun () ->
-        bashf ~dir:Path.the_root ~sandbox:Sandbox.hardlink
-          !"%{quote} %{quote} -ocaml-bin %{quote} -in-root"
-          (Path.to_string create_tarball)
-          (Path.to_string (Metadata.path ~package:pkg_name))
+        bashf ~dir ~sandbox:Sandbox.hardlink
+          !"%{quote} %{quote} -ocaml-bin %{quote} -relative-root %s"
+          (Path.reach_from ~dir create_tarball)
+          (Path.reach_from ~dir (Metadata.path ~package:pkg_name))
           Compiler_selection.compiler_bin_dir
+          (Path.reach_from ~dir Path.the_root)
       )
     in
     List.concat

@@ -11,4 +11,4 @@ val rules_for_individual_files
 val interpret_files_as_paths
   : dir:Path.t -> [ `Standard_formats | `Files of string list ] -> Path.t list Dep.t
 
-val rule_for_global_check : dir:Path.t -> all_files:Path.t list Dep.t -> Rule.t list
+val rules_for_the_root : dir:Path.t -> all_input_files:Path.t list Dep.t -> Rule.t list
