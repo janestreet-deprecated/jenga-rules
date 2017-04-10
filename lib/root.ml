@@ -9,7 +9,6 @@ open Ocaml_types
    aliases all the long names to the short names. And we also create $lib.ml-gen if the
    user or the jbuild doesn't say how to build $lib.ml. *)
 
-let wrapped_bindirs = false
 let wrapped_lib ~libname ~modules =
   match modules with
   | [ name ] when BN.is_lib ~libname name -> false
@@ -1318,6 +1317,17 @@ end = struct
   let dir = In_the_tree.liblinks_dir
 end
 
+let bin_prefix =
+  (* Must be a valid OCaml identifier prefix. We use bin_prefix because it's unlikely to
+     occur in a legitimate library name. This name matters a little as it can show up
+     in some link commands, link errors and elf symbols. *)
+  "bin_prefix_"
+
+let fake_libname_of_exes names =
+  match names with
+  | [] -> failwith "executable declarations with no executables aren't allowed"
+  | first_name :: _ -> LN.of_string (bin_prefix ^ first_name)
+
 (*----------------------------------------------------------------------
  directory context (dc)
 ----------------------------------------------------------------------*)
@@ -1348,9 +1358,14 @@ end
 let get_dirname_and_basename_of_cmx_artifact_exn artifacts a =
   Named_artifact.path artifacts a
   *>>| fun path ->
-  let basename = Path.basename path in
-  match String.chop_suffix ~suffix:".cmx" basename with
-  | Some basename -> Path.dirname path, basename
+  match String.chop_suffix ~suffix:".cmx" (Path.basename path) with
+  | Some basename ->
+    (* We give the jbuild the illusion that there is no wrapping, by converting
+       foo.cmx into bin_foo__Foo.cmx. This way, the presence of the wrapping or
+       the exact format we choose doesn't have to leak in jbuilds. *)
+    let libname = fake_libname_of_exes [ basename ] in
+    let obj = PN.of_barename ~wrapped:true ~libname (BN.of_string basename) in
+    Path.dirname path, obj, libname
   | None -> failwithf !"%{Artifact_name} does not point to a cmx file."
               (Named_artifact.name a) ()
 
@@ -2184,7 +2199,7 @@ let link_deps_of_unforced_libs (module Mode : Ocaml_mode.S) ~libs =
 let link_deps_of_objs (module Mode : Ocaml_mode.S) objs =
   List.concat_map objs ~f:(fun (dir, base) ->
     List.map Mode.cmx_and_o ~f:(fun suf ->
-      Dep.path (Path.relative ~dir (base ^ suf))))
+      Dep.path (PN.suffixed ~dir base suf)))
 ;;
 
 module Ppx_info = struct
@@ -2248,13 +2263,11 @@ let generate_ppx_exe_rules libmap ~dir ~artifacts ~link_flags =
     let fl_include_flags = Findlib.include_flags ~dir exe lib_deps ~predicates in
     Rule.create ~targets:[target] (
       Dep.both ppx_driver_runner_main lib_deps *>>= fun (ppx_driver_runner_main, libs) ->
-      let ppx_driver_runner_main_path =
-        let dir, obj = ppx_driver_runner_main in
-        suffixed ~dir obj Mode.cmx
-      in
+      let main_dir, main_obj, _ = ppx_driver_runner_main in
+      let ppx_driver_runner_main_path = PN.suffixed ~dir:main_dir main_obj Mode.cmx in
       let deps =
         List.concat
-          [ link_deps_of_objs mode [ ppx_driver_runner_main ]
+          [ link_deps_of_objs mode [ (main_dir, main_obj) ]
           ; link_deps_of_unforced_libs ~libs mode
           ]
       in
@@ -3518,7 +3531,7 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       *>>| fun (external_include_flags, (external_archives, ())) ->
       let sub_cmxs_in_correct_order =
         List.map objs ~f:(fun (obj_dir, base) ->
-          Path.reach_from ~dir (Path.relative ~dir:obj_dir (base ^ Mode.cmx))) in
+          Path.reach_from ~dir (PN.suffixed ~dir:obj_dir base Mode.cmx)) in
       let lib_cmxas =
         List.concat_map libs_maybe_forced ~f:(fun lib_dep ->
           match lib_dep, force_link with
@@ -3673,21 +3686,6 @@ module Executables_conf_interpret = struct
 
 end
 
-let bin_prefix =
-  let wrapped = wrapped_bindirs in
-  if not wrapped
-  then "bin-" (* not critical, but reduces diff from current packing rules *)
-  else
-    (* Must be a valid OCaml identifier prefix.
-       We use "__" here as well because it's unlikely to occur in
-       a legitimate library name  *)
-    "bin__"
-
-let fake_libname_of_exes names =
-  match names with
-  | [] -> failwith "executable declarations with no executables aren't allowed"
-  | first_name :: _ -> LN.of_string (bin_prefix ^ first_name)
-
 let objdeps ~dir name =
   BN.file_words (BN.suffixed ~dir name ".objdeps")
 ;;
@@ -3732,7 +3730,7 @@ let link_executable (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir ~wrapped ~libn
           (objdeps ~dir name
            *>>| fun bns ->
            List.map (bns @ [name]) ~f:(fun name ->
-             dir, PN.to_string (PN.of_barename ~wrapped ~libname name)))
+             dir, PN.of_barename ~wrapped ~libname name))
         ~exe
         ~force_link:None
         ~test_or_bench:false
@@ -3808,7 +3806,7 @@ let executables_rules (dc : DC.t) ~dir e_conf =
         name name ()
   end;
   let dc = Executables_conf_interpret.extend_dc e_conf dc in
-  let wrapped = wrapped_bindirs in
+  let wrapped = e_conf.wrapped in
   let for_executable = true in
   let can_setup_inline_runners = false in
   let names_set = BN.Set.of_list names in
@@ -3857,11 +3855,15 @@ let executables_rules (dc : DC.t) ~dir e_conf =
         check_no_dead_code @
         List.concat_map names ~f:(fun name ->
           let prefixed_name = PN.of_barename ~wrapped ~libname name in
-          let exe_suf, _ = exe_artifact_in_std_aliases ~only_shared_object in
+          let exe_suf =
+            match exe_artifact_in_std_aliases ~only_shared_object with
+            | _, `Cmx -> [] (* built anyway *)
+            | exe_suf, (`Exe | `So) -> [exe_suf]
+          in
           let not_exe_sufs, exe_sufs =
             if javascript_enabled && Option.is_some js_of_ocaml
-            then [".cmo"; ".cmx"], [Js_of_ocaml.exe_suf; exe_suf]
-            else [".cmx"], [exe_suf]
+            then [".cmo"; ".cmx"], Js_of_ocaml.exe_suf :: exe_suf
+            else [".cmx"], exe_suf
           in
           if link_executables && e_conf.link_executables
           then List.map exe_sufs
@@ -3993,12 +3995,12 @@ let toplevel_rules dc ~dir ~libname_for_libdeps ~(extra_lib : Lib_in_the_tree.t 
       ~link_libdeps_of:(
         Dep.List.concat [
           return [ (dir, libname_for_libdeps) ];
-          main *>>|fun (dir,obj) -> [dir, fake_libname_of_exes [obj] ];
+          main *>>|fun (dir, _, lib) -> [(dir, lib)];
         ])
       ~suppress_build_info:true
       ~suppress_version_util:true
       ~build_libs_DEFAULT:false
-      ~compute_objs:(main *>>| fun main -> [main])
+      ~compute_objs:(main *>>| fun (dir, obj, _) -> [(dir, obj)])
       ~exe:target
       ~force_link:extra_lib
       ~test_or_bench:false
@@ -4102,7 +4104,6 @@ let stdlib_cmis =
 ;;
 
 let embed_rules dc ~dir conf =
-  let wrapped = wrapped_bindirs in
   let {DC. xlibnames; _} = dc in
   let libname =
     match xlibnames with
@@ -4135,7 +4136,11 @@ let embed_rules dc ~dir conf =
            let libraries = Lib_dep.remove_dups_and_sort libraries in
            let local_cmis =
              List.map cmis ~f:(fun name ->
-               let prefixed_name = PN.of_barename ~wrapped ~libname (BN.of_string name) in
+               (* We use ~wrapped:false here because otherwise we would embed
+                  bin_prefix_Foo__Bar.cmi which is not useful given that we don't generate
+                  an external interface to shorten that name. The way forward is to force
+                  people off of this by creating a lib for the relevant cmis. *)
+               let prefixed_name = PN.of_barename ~wrapped:false ~libname (BN.of_string name) in
                PN.suffixed ~dir prefixed_name ".cmi"
              )
            in
@@ -4446,16 +4451,16 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
           ~link_libdeps_of:
             (Dep.List.concat [
                return [(dir, libname)];
-               if_expect_tests expect_runner (fun (dir, obj) -> [dir, fake_libname_of_exes [obj]]);
-               final_test_object *>>| fun (dir, obj) -> [dir, fake_libname_of_exes [obj]]
+               if_expect_tests expect_runner (fun (dir, _, lib) -> [(dir, lib)]);
+               final_test_object *>>| fun (dir, _, lib) -> [(dir, lib)]
              ];
             )
           ~force_link:(Some lib_in_the_tree)
           ~test_or_bench:true
           ~compute_objs:
             (Dep.List.concat [
-               if_expect_tests expect_runner (fun (dir, obj) -> [dir, obj]);
-               final_test_object *>>| fun (dir, obj) -> [dir, obj ];
+               if_expect_tests expect_runner (fun (dir, obj, _) -> [(dir, obj)]);
+               final_test_object *>>| fun (dir, obj, _) -> [(dir, obj)];
              ])
           ~js_of_ocaml
           ~exe)
@@ -4582,12 +4587,12 @@ let inline_bench_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree =
         ~ocaml_plugin_handling:`Not_a_plugin
         ~link_libdeps_of:
           (Dep.List.concat
-             [ return [dir, libname]
-             ; bench_runner *>>| fun (dir,obj) -> [dir, fake_libname_of_exes [obj]]
+             [ return [(dir, libname)]
+             ; bench_runner *>>| fun (dir, _, lib) -> [(dir, lib)]
              ])
         ~force_link:(Some lib_in_the_tree)
         ~test_or_bench:true
-        ~compute_objs:(bench_runner *>>| fun x -> [x])
+        ~compute_objs:(bench_runner *>>| fun (dir, obj, _) -> [(dir, obj)])
         ~exe
         ~js_of_ocaml:None
     );
@@ -4815,7 +4820,7 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
                 | `library conf ->
                   let _, _, modules = eval_names_spec ~dc conf.modules in
                   wrapped_lib ~libname:conf.name ~modules
-                | `executables _ -> wrapped_bindirs
+                | `executables conf -> conf.wrapped
                 | _ -> false
               in
               if wrapped
@@ -5213,7 +5218,7 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
       | `public_repo conf -> Scheme.rules (Public_release.rules ~artifacts:dc.artifacts ~dir conf)
       | `html conf -> Scheme.rules (Html.rules ~dir conf)
       | `enforce_style conf -> Scheme.rules (enforce_style ~dir conf)
-      | `wikipub files -> Wikipub.rules_for_individual_files ~dir files
+      | `wikipub wikipub -> Wikipub.rules_for_individual_files ~dir wikipub
     )
   )
 
@@ -5800,16 +5805,33 @@ let ocaml_version_file_rule =
 
 let root_only_scheme =
   let dir = Path.the_root in
-  let all_wikipub_input_files =
+  let wikipub_conf =
     return ()
     *>>= fun () ->
     deep_unignored_subdirs ~dir
     *>>= fun dirs ->
     Dep.List.concat_map dirs ~f:(fun dir ->
       User_or_gen_config.load ~dir
-      *>>= Dep.List.concat_map ~f:(function
-        | `wikipub files -> Wikipub.interpret_files_as_paths ~dir files
-        | _ -> return []))
+      *>>| List.filter_map ~f:(function
+        | `wikipub wikipub ->
+          Some (
+            match wikipub with
+            | `Files files ->
+              `Fst (List.map files ~f:(relative ~dir))
+            | `Preview_subtree subtree ->
+              `Snd (Path.relative ~dir (expand_vars ~dir subtree))
+            | `Standard_formats ->
+              `Trd dir
+          )
+        | _ -> None))
+    *>>= fun uploads_and_previews ->
+    let upload_files, preview_subdirs_of, upload_standard_formats_in =
+      List.partition3_map uploads_and_previews ~f:Fn.id
+    in
+    Wikipub.create
+      ~upload_files:(List.concat upload_files)
+      ~upload_standard_formats_in
+      ~preview_subdirs_of
   in
   Scheme.all [
     Scheme.sources [ ocaml_version_file_source_path ];
@@ -5820,7 +5842,7 @@ let root_only_scheme =
       alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"");
       ocaml_version_file_rule;
       alias_dot_filename_hack ~dir (Path.basename ocaml_version_file_output_path);
-    ] @ Wikipub.rules_for_the_root ~dir ~all_input_files:all_wikipub_input_files
+    ] @ Wikipub.rules_for_the_root ~dir wikipub_conf
     )
   ]
 

@@ -537,6 +537,8 @@ module Executables_conf = struct
   type t = {
     (* Each element of [names] is an executable, without the ".exe" suffix. *)
     names : string list;
+    (* This is meant as a temporary workaround, don't start using it. *)
+    wrapped : bool [@default true];
     link_executables : bool [@default true];
     projections_check : Projections_check.t sexp_option;
     allowed_ldd_dependencies : Ordered_set_lang.t sexp_option;
@@ -662,6 +664,30 @@ module Enforce_style_conf = struct
   [@@deriving of_sexp]
 end
 
+module Wikipub_conf = struct
+  (* These stanzas should be used in directories containing wikipub documents. They define
+     what documents wikipub should upload to the wiki. *)
+  type wikipub_sources =
+    (* Upload exactly the listed files, which should be in the local directory. *)
+    [ `Files of string list
+    (* Upload all files in this directory which wikipub knows how to process. *)
+    | `Standard_formats
+    ] [@@deriving of_sexp]
+
+  type t =
+    (* [Preview_subtree _] should be used in [jenga/start/jbuild], e.g.,
+       (wikipub (Preview_subtree "${ROOT}/app/wikipub/doc"))
+       It instructs jenga to upload the documents to the user's personal space in the dev
+       wiki. It must be used in conjunction with [wikipub_sources].
+
+       2017-03-28: Wikipub doesn't support partial upload yet, so in fact `Preview_subtree
+       causes a full upload every time regardless of which files changed.
+    *)
+    [ `Preview_subtree of String_with_vars.t
+    | wikipub_sources
+    ] [@@deriving of_sexp]
+end
+
 module Jbuild = struct
   (* [Jbuild.t] describes the various kinds of build configuration descriptions.
      A jbuild file contains the sexp-representation of a list of [Jbuild.t]
@@ -704,7 +730,7 @@ module Jbuild = struct
      used by tools other than jenga, e.g. an Emacs [after-save-hook], to automatically
      run [apply-style]. *)
   | `enforce_style of Enforce_style_conf.t
-  | `wikipub of [ `Standard_formats | `Files of string list ]
+  | `wikipub of Wikipub_conf.t
   ]
   [@@deriving of_sexp]
 end

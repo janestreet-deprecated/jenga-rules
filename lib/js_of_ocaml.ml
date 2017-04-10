@@ -402,7 +402,7 @@ let rules_for_executable
         *>>= fun js_archives_list ->
         let sub_cmos_in_correct_order =
           List.map objs ~f:(fun (obj_dir, base) ->
-            Path.relative ~dir:obj_dir (base ^ cmo_suf)) in
+            PN.suffixed ~dir:obj_dir base cmo_suf) in
         let libs_cma_js =
           List.concat_map libs ~f:(fun lib_dep ->
             match lib_dep with
