@@ -2221,10 +2221,10 @@ module Ppx_info = struct
       let uses_here = ref false in
       List.iter libs ~f:(fun lib ->
         match Lib_dep.to_string lib with
-        | "ppx_here" | "ppx_assert" -> uses_here := true
-        | "ppx_expect" -> uses_inline_test := true; uses_here := true
-        | "ppx_inline_test" -> uses_inline_test := true
-        | "ppx_bench" -> uses_inline_bench := true
+        | "ppx_here_expander" -> uses_here         := true
+        | "ppx_expect"        -> uses_inline_test  := true
+        | "ppx_inline_test"   -> uses_inline_test  := true
+        | "ppx_bench"         -> uses_inline_bench := true
         | _ -> ());
       let info =
         { uses_inline_test  = !uses_inline_test
@@ -2379,7 +2379,7 @@ let get_pp_com_args ~(kind:ml_kind) ~mc ~name : string list Dep.t =
       ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style pps
     *>>| fun (prog, args) ->
     let args =
-      ["-dump-ast";
+      ["-as-pp";
          "-loc-filename"; (BN.to_string name ^ ml_kind_to_suf kind)
       ] @ args
     in

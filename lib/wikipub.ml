@@ -5,7 +5,10 @@ open! Import
    valid Kerberos credentials out to a running jenga process. *)
 let krb5ccname = Var.register "KRB5CCNAME"
 
-let wikipub    = Path.absolute "/j/office/app/wikipub/bin/2017-03-30_2b80d050a62d"
+let wikipub    = Path.absolute "/j/office/app/wikipub/bin/2017-04-06_365b362c03d7"
+(* uncomment this for testing. *)
+(* let () = ignore wikipub
+   let wikipub = root_relative "app/wikipub/bin/main.exe" *)
 let template   = root_relative "app/wikipub/data/template.html"
 let mime_types = root_relative ".wikipub-mime-types.sexp"
 
