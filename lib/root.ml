@@ -3144,76 +3144,142 @@ let ocaml_library_archive dc ~dir ~impls ~wrapped ~libname ~flags =
                 @ ["-a"; "-o"; cmxa_without_suf ^ lib ])))))
 ;;
 
-(*----------------------------------------------------------------------
- hg_version
-----------------------------------------------------------------------*)
-
-(* Given that version_util is made available in core, there is little point in adding
-   version util (same thing for build_info) to executables without access to it. This way
-   we avoid the preprocessor executables constantly changing and causing jenga to do
-   spurious work. *)
-let hg_version_is_required libs =
-  List.exists libs ~f:(fun libdep ->
-    match Lib_dep.to_string libdep with
-    | "core_kernel" -> true
-    | _ -> false
-  )
-
-let hg_dirstate_suffix =
-  Dep.deferred (fun () ->
-    let open Async.Std in
-    run_action_now_stdout (
-      Action.process ~ignore_stderr:true ~dir:Path.the_root
-        hg_prog ["showconfig"; "jhg.omake-dirstate-suffix";]
-    ) >>| String.strip)
-
-let hg_version_out = root_relative "hg_version.out"
-
-let hg_version_out_rule =
-  Rule.create ~targets:[hg_version_out] (
-    begin
-      Dep.getenv version_util_support *>>= function
-      | false -> return "NO_VERSION_UTIL"
-      | true ->
-        Dep.both hg_dirstate_suffix all_the_repos
-        *>>= fun (dirstate_suffix, repos) ->
-        Dep.all (List.map repos ~f:(fun repo ->
-          Dep.action_stdout (
-            Dep.path (Path.relative ~dir:repo (".hg/dirstate" ^ dirstate_suffix))
-            *>>| fun () ->
-            bash ~ignore_stderr:true ~dir:repo
-              "echo -n \"$(hg showconfig 'paths.default')_$(hg id -i)\""
-          )
-        ))
-        *>>| String.concat ~sep:"\n"
-    end
-    *>>| Action.write_string ~target:hg_version_out)
-
-let hg_version_base ~base = base ^ ".hg_version"
-
 let generate_static_string_c_code_sh =
   relative ~dir:Config.script_dir "generate_static_string_c_code.sh"
 
-let hg_version_rules ~dir ~exe =
-  let base = hg_version_base ~base:exe in
-  let c = relative ~dir (base ^ ".c") in
-  let o = relative ~dir (base ^ ".o") in
-  let o_rule =
-    simple_rule ~targets:[o] ~deps:[Dep.path c]
-      ~action:(
-        Action.process ~dir ocamlc_path [basename c; "-o"; basename o;]
-      )
-  in
-  let c_rule =
-    simple_rule ~targets:[c]
-      ~deps:[Dep.path generate_static_string_c_code_sh; Dep.path hg_version_out]
-      ~action:(
-        bashf ~dir !"%{quote} generated_hg_version < %{quote} > %{quote}"
-          (reach_from ~dir generate_static_string_c_code_sh)
-          (reach_from ~dir hg_version_out)
-          (basename c))
-  in
-  [c_rule; o_rule]
+module Hg_version = struct
+
+  (* Given that version_util is made available in core, there is little point in adding
+     version util (same thing for build_info) to executables without access to it. This way
+     we avoid the preprocessor executables constantly changing and causing jenga to do
+     spurious work. *)
+  let is_required libs =
+    List.exists libs ~f:(fun libdep ->
+      match Lib_dep.to_string libdep with
+      | "core_kernel" -> true
+      | _ -> false
+    )
+
+  let hg_dirstate_suffix =
+    Dep.deferred (fun () ->
+      let open Async.Std in
+      run_action_now_stdout (
+        Action.process ~ignore_stderr:true ~dir:Path.the_root
+          hg_prog ["showconfig"; "jhg.omake-dirstate-suffix";]
+      ) >>| String.strip)
+
+  let hg_version_out = root_relative "hg_version.out"
+
+  let hg_version_out_rule =
+    Rule.create ~targets:[hg_version_out] (
+      begin
+        Dep.getenv version_util_support *>>= function
+        | false -> return "NO_VERSION_UTIL"
+        | true ->
+          Dep.both hg_dirstate_suffix all_the_repos
+          *>>= fun (dirstate_suffix, repos) ->
+          (* In here we need to be compatible with the old dirstate extension, and the new
+             one, and both of them being used interleaved (by different versions of hg).
+
+             So we depend on .hg/dirstate.for-omake.txt as always, but optionally because
+             the new hg will not create it. We depend on the .hg/dirstate.for-jenga.txt,
+             and since [build_begin ()] will create that file, we just depend on it
+             unconditionally. *)
+          Dep.all (List.map repos ~f:(fun repo ->
+            Dep.action_stdout (
+              let old_dirstate_file = relative ~dir:repo (".hg/dirstate" ^ dirstate_suffix) in
+              let new_dirstate_file = relative ~dir:repo (".hg/dirstate.for-jenga.txt") in
+              Dep.all_unit
+                [ (Dep.file_exists old_dirstate_file *>>= function
+                  | true -> Dep.path old_dirstate_file
+                  | false -> Dep.return ())
+                ; Dep.path new_dirstate_file
+                ] *>>| fun () ->
+              (* jenga-latest-hg-version is used to know what's the last version that
+                 jenga knows in [force_hg_version_out_to_be_up_to_date]. Technically,
+                 there could be a discrepancy between what jenga knows and what's in the
+                 file because we could write a new file but fail to save the db. I think
+                 it's fine, because if that happens, when jenga is restarted, this command
+                 will need to rerun for the same reason we were running it in the first
+                 place. *)
+              bash ~ignore_stderr:true ~dir:repo
+                "output=\"$(hg showconfig paths.default)_$(hg id -i)\"; \
+                 echo -n \"$output\" > .hg/jenga-latest-hg-version; \
+                 echo -n \"$output\""
+            )
+          ))
+          *>>| String.concat ~sep:"\n"
+      end
+      *>>| Action.write_string ~target:hg_version_out)
+
+  let path_of_here = root_relative "jenga/root.ml"
+  let () =
+    if not Config.public then
+      assert (String.is_suffix [%here].pos_fname
+                ~suffix:("/" ^ Path.to_string path_of_here));
+  ;;
+
+  let force_hg_version_out_to_be_up_to_date () =
+    let open Async.Std in
+    Sys.readdir (Path.to_absolute_string Path.the_root)
+    >>= fun subdirs ->
+    Deferred.List.iter ("." :: Array.to_list subdirs) ~f:(fun dir ->
+      Sys.file_exists (Filename.concat dir ".hg")
+      >>= function
+      | `No | `Unknown -> Deferred.unit
+      | `Yes ->
+        let dir = root_relative dir in
+        (* There can be two versions of the dirstate extension:
+           - the old one that will create .hg/dirstate.for-omake.txt containing rev40 and
+             an optional +. Calling [hg show] below forces it to recreate the file, but
+             only if it's not to up-to-date (if the file was unconditionally rewritten by
+             the extension, it would make jenga loop, because build_end() would start a
+             new build).
+           - the new one that will create .hg/dirstate.for-jenga.txt containing an ever
+             changing value. Same as above, we force this file to change jenga's knowledge
+             of the version is stale but if it's not, we must not self-trigger ourselves.
+             The existence of .hg/dirstate.for-jenga.v6 and the presence of that filename
+             in the current file is how hg knows to create the new file rather than the
+             old one. *)
+        if Var.peek version_util_support
+        then
+          run_action_now (bashf ~ignore_stderr:true ~dir
+                            !"echo -n %{quote} > .hg/dirstate.for-jenga.v6; \
+                              touch .hg/jenga-latest-hg-version; \
+                              output=\"$(hg showconfig paths.default)_$(hg id -i)\"; \
+                              if [ \"$output\" != \"$(cat .hg/jenga-latest-hg-version 2>/dev/null || true)\" ]; \
+                              then uuid > .hg/dirstate.for-jenga.txt; \
+                              fi" (reach_from ~dir path_of_here))
+        else
+          run_action_now (bashf ~ignore_stderr:true ~dir
+                            !"echo -n %{quote} > .hg/dirstate.for-jenga.v6"
+                            (reach_from ~dir path_of_here))
+    )
+  ;;
+
+  let base ~base = base ^ ".hg_version"
+
+  let rules ~dir ~exe =
+    let base = base ~base:exe in
+    let c = relative ~dir (base ^ ".c") in
+    let o = relative ~dir (base ^ ".o") in
+    let o_rule =
+      simple_rule ~targets:[o] ~deps:[Dep.path c]
+        ~action:(
+          Action.process ~dir ocamlc_path [basename c; "-o"; basename o;]
+        )
+    in
+    let c_rule =
+      simple_rule ~targets:[c]
+        ~deps:[Dep.path generate_static_string_c_code_sh; Dep.path hg_version_out]
+        ~action:(
+          bashf ~dir !"%{quote} generated_hg_version < %{quote} > %{quote}"
+            (reach_from ~dir generate_static_string_c_code_sh)
+            (reach_from ~dir hg_version_out)
+            (basename c))
+    in
+    [c_rule; o_rule]
+end
 
 (*----------------------------------------------------------------------
  build_info
@@ -3254,9 +3320,9 @@ let link_deps_of_libs mode ~dir ~libs_maybe_forced ~force_link ~build_libs_DEFAU
 ;;
 
 let link_deps_of_version_util (module Mode : Ocaml_mode.S) ~dir ~suppress_version_util ~libs exe =
-  if not suppress_version_util && hg_version_is_required libs then
+  if not suppress_version_util && Hg_version.is_required libs then
     [ Dep.path (relative ~dir
-                  (hg_version_base ~base:(exe ^ Mode.exe) ^ ".o"))
+                  (Hg_version.base ~base:(exe ^ Mode.exe) ^ ".o"))
     ]
   else
     []
@@ -3469,7 +3535,7 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
     | `Byte -> ocamlc_path, dc.ocamlcflags
     | `Native -> ocamlopt_path, dc.ocamloptflags
   in
-  let hg_version_o = relative ~dir (hg_version_base ~base:(exe ^ Mode.exe) ^ ".o") in
+  let hg_version_o = relative ~dir (Hg_version.base ~base:(exe ^ Mode.exe) ^ ".o") in
   let build_info_o = relative ~dir (build_info_base ~base:(exe ^ Mode.exe) ^ ".o") in
 
   let libs_for_plugins, ocaml_plugin_deps, ocaml_plugin_flags =
@@ -3511,7 +3577,7 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       in
       let version_util_args =
         if not suppress_version_util &&
-           hg_version_is_required libs_maybe_forced
+           Hg_version.is_required libs_maybe_forced
         then [ basename hg_version_o ]
         else []
       in
@@ -3588,7 +3654,7 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       let hg_version =
         if suppress_version_util
         then None
-        else Some hg_version_out
+        else Some Hg_version.hg_version_out
       in
       let build_info =
         if suppress_build_info
@@ -3645,7 +3711,7 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       ];
     (if suppress_version_util
      then []
-     else hg_version_rules ~dir ~exe:(exe ^ Mode.exe));
+     else Hg_version.rules ~dir ~exe:(exe ^ Mode.exe));
     (if suppress_build_info
      then []
      else build_info_rules ~dir ~exe ~suf:Mode.exe ~sexp_dep);
@@ -5583,31 +5649,21 @@ let putenv () = (* setup external actions *)
     (* Comparisons in the shell depend on the locale (eg [[ ! /j < "4.01" ]]) so let's use
        the same one for everyone *)
     ("LANG", Some "C");
+    (* CDPATH causes cd to echo the path. This breaks anything that is not expecting
+       this.  *)
+    ("CDPATH", None);
+    (* DISPLAY causes issues with the unit tests *)
+    ("DISPLAY", None);
   ] @ Config.putenv
 
-let call_hg_showconfig_to_trigger_dirstate_change () =
-  let open Async.Std in
-  Sys.readdir (Path.to_absolute_string Path.the_root)
-  >>= fun subdirs ->
-  Deferred.List.iter ("." :: Array.to_list subdirs) ~f:(fun dir ->
-    Sys.file_exists (Filename.concat dir ".hg")
-    >>= function
-    | `No | `Unknown -> Deferred.unit
-    | `Yes ->
-      (* We rely on this action not touching the dirstate file in the case it is unchanged.
-         If it did, we could not unconditionally call this function from build_end without
-         causing a continuously looping build *)
-      run_action_now (bash ~dir:(Path.root_relative dir) "hg showconfig 2>&1 > /dev/null")
-  )
-
 let build_begin () =
-  Async.Std.don't_wait_for (call_hg_showconfig_to_trigger_dirstate_change ());
+  Async.Std.don't_wait_for (Hg_version.force_hg_version_out_to_be_up_to_date ());
   run_action_now (
     delete_and_recreate_tmpdir_action
   )
 
 let build_end () =
-  Async.Std.don't_wait_for (call_hg_showconfig_to_trigger_dirstate_change ());
+  Async.Std.don't_wait_for (Hg_version.force_hg_version_out_to_be_up_to_date ());
   Async.Std.Deferred.unit
 
 let command_lookup_path () =
@@ -5747,7 +5803,7 @@ let scheme_of_non_generated_dirs ~dir =
             Scheme.rules (List.concat
               [ Libmap_sexp.rules;
                 Artifacts_store_sexp.rules;
-                [ hg_version_out_rule;
+                [ Hg_version.hg_version_out_rule;
                   Lib_clients.Cache.rule ~libmap_dep:Libmap_sexp.get;
                   alias_dot_filename_hack ~dir Lib_clients.Cache.file;
                   top_api_rule;
