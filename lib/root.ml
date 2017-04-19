@@ -1801,7 +1801,7 @@ let expanded_to_action ~sandbox ~timeout ~uses_catalog ~dir (t : string User_act
       |> Catalog_sandbox.wrap uses_catalog ~can_assume_env_is_setup:true
       |> wrap_timeout timeout
     in
-    Action.process ?sandbox ~dir:process.dir process.prog process.args
+    Action.process' ?sandbox process
 ;;
 
 let rule_conf_to_rule ~dir artifacts conf =
@@ -4423,24 +4423,26 @@ cd "$(dirname "$(readlink -f "$0")")"
 ;;
 
 let run_inline_action ~dir ~uses_catalog ~user_deps ~exe_deps ~flags ~runtime_deps
-      ~sandbox filename =
+      ~timeout ~sandbox filename =
   let sources = List.map ~f:(relative ~dir) (filename :: exe_deps) in
-  (Dep.all_unit (List.map (time_limit :: sources) ~f:Dep.path
-                 @ runtime_deps
-                 @ Dep_conf_interpret.list_to_depends ~dir user_deps
-                 @ Catalog_sandbox.deps uses_catalog
-                )
-   *>>| fun () ->
-   let args =
-     (* Longer timeout for the javascript tests, which are sometimes much slower. *)
-     [ (if javascript_enabled then "120" else "60")
-     ; "./" ^ filename
-     ]
-     @ flags
-     @ (if inline_test_color    then [] else ["-no-color"])
-     @ (if inline_test_in_place then ["-in-place"] else [])
-   in
-   Action.process ~sandbox ~dir (reach_from ~dir time_limit) args)
+  Dep.all_unit (List.map (time_limit :: sources) ~f:Dep.path
+                @ runtime_deps
+                @ Dep_conf_interpret.list_to_depends ~dir user_deps
+                @ Catalog_sandbox.deps uses_catalog
+               )
+  *>>| fun () ->
+  let prog = "./" ^ filename in
+  let timeout =
+    match timeout with
+    | None -> Inline_tests.default_timeout ~for_javascript:javascript_enabled
+    | Some timeout -> timeout
+  in
+  let args =
+    flags
+    @ (if inline_test_color    then [] else ["-no-color"])
+    @ (if inline_test_in_place then ["-in-place"] else [])
+  in
+  Action.process' ~sandbox (wrap_timeout (Some timeout) { dir; prog; args })
 
 let all_whitespace s = String.for_all s ~f:Char.is_whitespace
 
@@ -4600,13 +4602,14 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
                      ~flags:["-list-partitions"]
                      ~uses_catalog:user_config.uses_catalog
                      ~sandbox:Sandbox.default
-                  )
+                     ~timeout:None)
                 *>>= fun output ->
                 let partitions = String.split_lines output in
                 Dep.all_unit (List.map partitions ~f:(fun p ->
                   Dep.action
                     (run_inline_action ~dir ~exe_deps exe
                        ~user_deps:user_config.deps
+                       ~timeout:user_config.timeout
                        ~runtime_deps:
                          (let source = p ^ ".ml" in
                           if Set.mem (force sources) source
@@ -5271,9 +5274,10 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
       | `unified_tests conf ->
         Scheme.rules (
           Js_unified_tests.rules ~dir
-            { target = conf.target
+            { target = Jbuild_types.Unified_tests.target conf
             ; setup_script = Option.map conf.setup_script ~f:(expand_vars ~dir)
             ; deps = Dep_conf_interpret.list_to_depends ~dir conf.deps
+            ; timeout = conf.timeout
             ; sandbox = if sandbox_rules then conf.sandbox else Sandbox.default
             ; uses_catalog = conf.uses_catalog
             ; runtime_deps_alias = Alias.runtime_deps_of_tests ~dir
@@ -5639,23 +5643,6 @@ let delete_and_recreate_tmpdir_action =
   bashf ~dir:Path.the_root "chmod -R +w %s &>/dev/null || true; rm -rf %s; mkdir -p %s"
     tmpdir tmpdir tmpdir
 
-let putenv () = (* setup external actions *)
-  [
-    (* /tmp partitions are small, which causes issues (for instance many simultaneous
-       ocaml-plugin runs can go over the 1GB limit, especially if /tmp already contains
-       stuff). So we stick the tmp directory on the local disk, which is much harder to
-       fill, is easier to clean automatically, and makes admins happy. *)
-    ("TMPDIR", Some (Path.to_absolute_string (relative ~dir:Path.the_root tmpdir)));
-    (* Comparisons in the shell depend on the locale (eg [[ ! /j < "4.01" ]]) so let's use
-       the same one for everyone *)
-    ("LANG", Some "C");
-    (* CDPATH causes cd to echo the path. This breaks anything that is not expecting
-       this.  *)
-    ("CDPATH", None);
-    (* DISPLAY causes issues with the unit tests *)
-    ("DISPLAY", None);
-  ] @ Config.putenv
-
 let build_begin () =
   Async.Std.don't_wait_for (Hg_version.force_hg_version_out_to_be_up_to_date ());
   run_action_now (
@@ -5930,7 +5917,7 @@ let scheme ~dir : Env.Per_directory_information.t =
 ;;
 
 let env () = Env.create
-  ~putenv:(putenv ())
+  ~putenv:(Config.putenv ~tmpdir:(relative ~dir:Path.the_root tmpdir))
   ~command_lookup_path:(command_lookup_path ())
   ~build_begin
   ~build_end

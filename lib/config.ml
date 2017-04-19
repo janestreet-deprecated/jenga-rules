@@ -1,7 +1,7 @@
 open Core.Std
 open Import
 
-let putenv = []
+let putenv ~tmpdir:_ = []
 
 let script_dir =
   let ic = Unix.open_process_in "ocamlfind query jenga-rules" in

@@ -209,6 +209,10 @@ module Action = struct
     process ?sandbox ?ignore_stderr ~dir ~prog ~args ()
   ;;
 
+  let process' ?env ?sandbox ?ignore_stderr { dir; prog; args; } =
+    process ?env ?sandbox ?ignore_stderr ~dir prog args
+  ;;
+
   let process_with_redirected_stdout ~to_:target ~dir prog args =
     bashf ~dir !"tmp=\"$(mktemp --tmpdir)\"; \
                  %{concat_quoted} > \"$tmp\"; \

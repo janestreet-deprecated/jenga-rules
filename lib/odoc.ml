@@ -127,11 +127,64 @@ let _odoc_html_targets_rule ~dir ~search_paths input =
     Action.save out ~target
   )
 
-let odoc_html_rules ~dir ~search_paths ~libname =
-  let odoc_dir = Path.relative ~dir:odoc_output_dir (LN.to_string libname) in
+let mld_file_rule ~dir ~lib:(lib : Lib_in_the_tree.t) inputs_as_module_map =
+  let sln = LN.to_module lib.name in
+  let mld_filename = LN.to_string lib.name ^ ".mld" in
+  let target = Path.relative ~dir mld_filename in
+  let generate () =
+    let mld_file_content, deps =
+      if Map.mem inputs_as_module_map (sln ^ "__") then (
+        (* [Foo__] present means [Foo] was written by the user, link to that. *)
+        sprintf "The entry point for this library is module {!module:%s}." sln,
+        [Map.find_exn inputs_as_module_map sln]
+      ) else
+        match Map.find inputs_as_module_map (sln ^ "__Std") with
+        | Some path ->
+          sprintf "The entry point for this library is module {!module:%s.Std}." sln,
+          [path]
+        | None ->
+          sprintf "This library doesn't follow the usual convention.\n\
+                   Here are the modules it exposes: {!modules: %s}"
+            (String.concat ~sep:" " (Map.keys inputs_as_module_map)),
+          Map.data inputs_as_module_map
+    in
+    let mld_file_content =
+      sprintf "{%%html:<nav><a href=\"..\">Up</a></nav>%%}\n\
+               {1 Library %s}\n%s"
+        sln mld_file_content
+    in
+    let rule =
+      Rule.simple ~targets:[target] ~deps:[]
+        ~action:(Action.save mld_file_content ~target)
+    in
+    target, rule, deps
+  in
+  let copy source_mld_file =
+    let deps = Map.data inputs_as_module_map in
+    let rule =
+      Rule.create ~targets:[target] (
+        Dep.contents source_mld_file
+        *>>| fun mld_file_content ->
+        let mld_file_content =
+          sprintf "{%%html:<nav><a href=\"..\">Up</a></nav>%%}\n%s\n"
+            mld_file_content
+        in
+        Action.save mld_file_content ~target
+      )
+    in
+    target, rule, deps
+  in
+  let source_mld_file = Path.relative ~dir:lib.source_path mld_filename in
+  Dep.file_exists source_mld_file
+  *>>| function
+  | true  -> copy source_mld_file
+  | false -> generate ()
+
+let odoc_html_rules ~dir ~search_paths (lib : Lib_in_the_tree.t) =
+  let odoc_dir = Path.relative ~dir:odoc_output_dir (LN.to_string lib.name) in
   let search_paths = odoc_dir :: search_paths in
   Dep.glob_listing (Glob.create ~dir:odoc_dir "*.odoc")
-  *>>| fun inputs ->
+  *>>= fun inputs ->
   let inputs_as_module_map =
     String.Map.of_alist_exn
       (List.map inputs ~f:(fun path ->
@@ -178,47 +231,21 @@ let odoc_html_rules ~dir ~search_paths ~libname =
     )
   in
   let css_target = Path.relative ~dir:(dirname dir) "odoc.css" in
-  let sln = LN.to_module libname in
-  let index_target, index_rule, mld_rule =
-    let target = Path.relative ~dir "index.html" in
-    let mld_file = Path.relative ~dir (sln ^ ".mld") in
-    let mld_file_content, mld_deps =
-      if Map.mem inputs_as_module_map (sln ^ "__") then (
-        (* [Foo__] present means [Foo] was written by the user, link to that. *)
-        sprintf "The entry point for this library is module {!module:%s}." sln,
-        [Map.find_exn inputs_as_module_map sln]
-      ) else
-        match Map.find inputs_as_module_map (sln ^ "__Std") with
-        | Some path ->
-          sprintf "The entry point for this library is module {!module:%s.Std}." sln,
-          [path]
-        | None ->
-          sprintf "This library doesn't follow the usual convention.\n\
-                   Here are the modules it exposes: {!modules: %s}"
-            (String.concat ~sep:" " (Map.keys inputs_as_module_map)),
-          Map.data inputs_as_module_map
-    in
-    let mld_file_content =
-      sprintf "{%%html:<nav><a href=\"..\">Up</a></nav>%%}\n\
-               {1 Library %s}\n%s"
-        sln mld_file_content
-    in
-    let mld_rule =
-      Rule.simple ~targets:[mld_file] ~deps:[] ~action:(
-        Action.save mld_file_content ~target:mld_file
+  let index_target = Path.relative ~dir "index.html" in
+  mld_file_rule ~dir ~lib inputs_as_module_map
+  *>>| fun (mld_file, mld_rule, mld_deps) ->
+  let index_rule =
+    Rule.simple ~targets:[index_target]
+      ~deps:(List.map ~f:Dep.path (mld_file :: mld_deps))
+      ~action:(
+        Action.process ~ignore_stderr:true ~dir:(Path.dirname dir) odoc_path (
+          [ "html"; "-o"; "."]
+          @ (dash_Is ~dir:(Path.dirname dir) search_paths)
+          @ [ "--index-for"; Path.basename dir
+            ; Path.reach_from ~dir:(Path.dirname dir) mld_file
+            ]
+        )
       )
-    in
-    let index_rule =
-      Rule.simple ~targets:[target] ~deps:(List.map ~f:Dep.path (mld_file :: mld_deps)) ~action:(
-        Action.process ~ignore_stderr:true ~dir:(Path.dirname dir) odoc_path
-          [ "html"; "-o"; "."
-          ; "-I"; Path.reach_from ~dir:(Path.dirname dir) odoc_dir
-          ; "--index-for"; Path.basename dir
-          ; Path.reach_from ~dir:(Path.dirname dir) mld_file
-          ]
-      )
-    in
-    target, index_rule, mld_rule
   in
   Rule.alias (alias ~dir)
     (List.map (css_target :: index_target :: targets) ~f:Dep.path)
@@ -253,6 +280,6 @@ let setup ~dir ~lib_in_the_tree:(lib:Lib_in_the_tree.t) ~lib_deps step =
           (alias ~dir:(Path.relative ~dir:html_output_dir (LN.to_string l)))
       )
     in
-    odoc_html_rules ~dir ~search_paths ~libname:lib.name
+    odoc_html_rules ~dir ~search_paths lib
     *>>| fun rules ->
     Rule.alias (alias ~dir) html_aliases_for_deps :: rules

@@ -4,6 +4,7 @@ open Import
 type t =
   { target : string
   ; deps : unit Dep.t list
+  ; timeout : Time.Span.t
   ; setup_script : string option
   ; sandbox : Sandbox.t
   ; uses_catalog : Jbuild_types.Uses_catalog.t
@@ -17,7 +18,8 @@ let ocaml_style = Var.peek_register_bool ocaml_style_varname
 let ascii_diffs_varname = "UNIFIED_TESTS_ASCII_DIFFS"
 let ascii_diffs = Var.peek_register_bool ascii_diffs_varname ~default:false
 
-let rules ~dir { target; deps; setup_script; sandbox; uses_catalog; runtime_deps_alias } =
+let rules ~dir
+      { target; deps; timeout; setup_script; sandbox; uses_catalog; runtime_deps_alias } =
   let script_basename = "run-unified-tests" in
   let script = Path.relative ~dir script_basename in
   let unified_tests_script, unified_tests_script_runtime_deps =
@@ -27,8 +29,12 @@ let rules ~dir { target; deps; setup_script; sandbox; uses_catalog; runtime_deps
   let run_the_tests =
     let { Action. prog; args; dir = dir' } =
       let prog = Path.reach_from ~dir unified_tests_script in
+      let args =
+        let timeout_in_sec = Float.iround_up_exn (Time.Span.to_sec timeout) in
+        ["--timeout"; Int.to_string timeout_in_sec]
+      in
       Catalog_sandbox.wrap uses_catalog ~can_assume_env_is_setup:false
-         { prog; dir; args = [] }
+        { prog; dir; args; }
     in
     assert (Path.(=) dir dir');
     sprintf !{|%{concat_quoted} "$@"|} (prog :: args)

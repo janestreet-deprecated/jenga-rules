@@ -5,7 +5,7 @@
 
 open Import
 
-val putenv : (string * string option) list
+val putenv : tmpdir:Path.t -> (string * string option) list
 
 val findlib_conf_default : string option
 

@@ -261,6 +261,20 @@ module Sandbox_conf = struct
       Sexplib.Conv.of_sexp_error "invalid sandbox kind" sexp
 end
 
+let validate_test_timeout ~sexp ~alias_field_name ~default_timeout alias timeout =
+  let fail msg = Sexplib.Conv.of_sexp_error msg sexp in
+  match alias, timeout with
+  | None, Some timeout when Time.Span.(>) timeout default_timeout ->
+    fail (
+      sprintf "Test timeout increased without specifying the [%s]. \
+               Please consider moving slow tests to [feature-subtree-build] alias and/or \
+               think about how your slow tests will affect other people. \
+               Also consider splitting up your test into multiple files because timeout \
+               is per-file. This is not just a way of tricking the timeout mechanism: it \
+               also increases parallelism, which might make tests faster."
+        alias_field_name)
+  | _ -> ()
+
 (** Configuration of the inline_tests_runner *)
 module Inline_tests = struct
   type build_and_run =
@@ -282,6 +296,8 @@ module Inline_tests = struct
   type t = {
     (** The dependencies of running the inline tests *)
     deps : Dep_conf.t sexp_list;
+    (** Per-file test timeout *)
+    timeout : Time.Span.t sexp_option;
     (** Flags to pass to the inline test runner *)
     flags : string sexp_list;
     (** The alias that runs the tests runners in *)
@@ -315,15 +331,26 @@ module Inline_tests = struct
       javascript_enabled && should_run   ~default:has_js_of_ocaml t.javascript
     }
 
+  let default_timeout ~for_javascript =
+    (* Longer timeout for the javascript tests, which are sometimes much slower. *)
+    if for_javascript then Time.Span.of_sec 120. else Time.Span.of_sec 60.
+
   let validate t ~sexp ~has_js_of_ocaml =
     let w = what_tests_to_build_or_run t ~has_js_of_ocaml ~javascript_enabled:true in
     let fail msg = Sexplib.Conv.of_sexp_error msg sexp in
-    if not w.run_native && not w.run_javascript then begin
+    if not w.build_native && not w.build_javascript then begin
       if not (List.is_empty t.deps)
-      then fail "inline tests deps only apply to the default way of running tests";
+      then fail "inline tests deps only apply to the default way of building tests";
+    end;
+    if not w.run_native && not w.run_javascript then begin
       if not (Option.is_none t.alias)
       then fail "inline tests alias only applies to the default way of running tests";
+      if not (Option.is_none t.timeout)
+      then fail "timeout only applies to the default way of running tests";
     end;
+    validate_test_timeout ~sexp
+      t.alias ~alias_field_name:"alias"
+      t.timeout ~default_timeout:(default_timeout ~for_javascript:false);
     if (w.run_javascript || w.build_javascript) && not has_js_of_ocaml then begin
       fail "cannot enable javascript tests because the library is not supported in \
             javascript (the js_of_ocaml field is missing)"
@@ -338,6 +365,7 @@ module Inline_tests = struct
 
   let default : t = {
     deps = [];
+    timeout = None;
     flags = [];
     alias = None;
     native = None;
@@ -579,17 +607,35 @@ module Jane_script_conf = struct
 end
 
 module Unified_tests = struct
+  (* We stick with the default from run-tests.py (not that we have to). *)
+  let default_timeout = Time.Span.of_sec 180.
+
   (* Jenga will generate a "run-unified-tests" script that can be used to manually run
      your tests. [setup_script] will be sourced before running the tests. The tests must
      be named test-XXX.t  *)
   type t =
-    { target : string [@default "runtest"]
+    { target : string sexp_option
     ; deps : Dep_conf.t list
+    ; timeout : Time.Span.t [@default default_timeout]
     ; setup_script : String_with_vars.t sexp_option
     ; sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink]
     ; uses_catalog : Uses_catalog.t [@default No]
     }
   [@@deriving of_sexp]
+
+  let target t = Option.value t.target ~default:"runtest"
+
+  let validate ~sexp t =
+    validate_test_timeout ~sexp
+      t.target ~alias_field_name:"target"
+      (Some t.timeout) ~default_timeout
+  ;;
+
+  let t_of_sexp sexp =
+    let t = t_of_sexp sexp in
+    validate ~sexp t;
+    t
+
 end
 
 module Toplevel_expect_tests = struct
