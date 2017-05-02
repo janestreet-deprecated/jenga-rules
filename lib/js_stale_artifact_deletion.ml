@@ -9,6 +9,12 @@ let delete_eagerly =
     | _ -> false)
 ;;
 
+let raise_located ~hgignore msg =
+  Located_error.raise
+    ~loc:{ source = File hgignore; line = 1; start_col = 0; end_col = 0 }
+    msg
+;;
+
 let delete_if_depended_upon =
   Dep.fs_glob_listing (Glob.create ~dir:Path.the_root "*" ~kinds:[`Directory])
   *>>= fun dirs ->
@@ -16,8 +22,9 @@ let delete_if_depended_upon =
     Dep.fs_glob_listing (Glob.create ~dir "{.hg,.hgignore}")
     *>>= function
     | [_; _] ->
+      let hgignore = Path.relative ~dir ".hgignore" in
       Dep.action_stdout
-        (Dep.source_if_it_exists (Path.relative ~dir ".hgignore")
+        (Dep.source_if_it_exists hgignore
          *>>| fun () ->
          (* silence hg's garbage output about locks *)
          Action.process ~ignore_stderr:true ~dir "hg" [ "debugignore" ])
@@ -25,7 +32,19 @@ let delete_if_depended_upon =
       let stdout = Option.value ~default:stdout (String.chop_suffix stdout ~suffix:"\n") in
       (* avoid considering everything is ignored if the hgignore is empty *)
       let stdout = if String.is_empty stdout then "a^" else stdout in
-      Some (Path.basename dir, Re.compile (Re_pcre.re ("^" ^ stdout)))
+      let re =
+        try Re.compile (Re_pcre.re ("^" ^ stdout))
+        with e -> raise_located ~hgignore (Exn.to_string e)
+      in
+      begin
+        let path_that_shouldnt_be_matched = "lib/foo/src/file.ml" in
+        if Re.execp re path_that_shouldnt_be_matched
+        then raise_located ~hgignore
+               (sprintf "the hgignore seems to ignore way too many files, \
+                         given that it matches %s (conflict markers maybe?)"
+                  path_that_shouldnt_be_matched)
+      end;
+      Some (Path.basename dir, re)
     | _ -> return None
   in
   Dep.both

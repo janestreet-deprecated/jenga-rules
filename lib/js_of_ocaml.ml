@@ -53,11 +53,6 @@ let runtime_files artifacts =
         "weak.js";
       ]
   )
-let runtime_files_for_standalone_runtime artifacts =
-  Dep.both
-    (runtime_file_path artifacts "predefined_exceptions.js")
-    (runtime_files artifacts)
-  *>>| fun (a,b) -> a :: b
 
 let runtime_files_for_lib_in_compiler_distribution ~artifacts t =
   match From_compiler_distribution.to_string t with
@@ -208,12 +203,12 @@ let rule_for_compilation_unit ~artifacts ~dir ~sourcemap ~devel ~flags ~src ~tar
 
 let rule_for_standalone_runtime ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~other_flags ~js_files ~target =
   let rest_dep = Dep.return () in
-  let rest = [ "--runtime-only"; "dummy_source" ] in
+  let flags = "--runtime-only" :: flags in
   let js_files =
-    Dep.both (runtime_files_for_standalone_runtime artifacts) js_files
+    Dep.both (runtime_files artifacts) js_files
     *>>| fun (a,b) -> a @ b
   in
-  rule_aux ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~other_flags ~target ~js_files  rest_dep rest
+  rule_aux ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~other_flags ~target ~js_files  rest_dep []
 
 let setup_aux ~artifacts ~sourcemap ~devel ~src ~dst =
   let flags = [] in

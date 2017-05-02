@@ -406,7 +406,7 @@ let root_var_table = [
   "MAKE"           , "make"
 ] @ External_apis.root_var_table
 
-let javascript_enabled = Compiler_selection.m32 || Config.public
+let javascript_enabled = Compiler_selection.m32 || portable_int63 || Config.public
 let javascript_separate_compilation = for_javascript_development
 
 let root_var_lookup =
@@ -4345,7 +4345,7 @@ let inline_tests_args ~runtime_environment ~libname ~flags : string list =
   in
   let other_drop_arg =
     match runtime_environment with
-    | `Javascript -> [ "-drop-tag" ; "no-js" ]
+    | `Javascript -> [ "-drop-tag" ; "no-js"; "-drop-tag"; "64-bits-only" ]
     | `Emacs      -> [ "-drop-tag" ; "js-only" ]
     | `Exe        -> [ "-drop-tag" ; "js-only" ]
   in
