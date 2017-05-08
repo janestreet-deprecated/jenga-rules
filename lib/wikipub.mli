@@ -2,7 +2,7 @@
     checks like absence of dead links across the tree (and then uploading such things
     to confluence though that bit is done outside of jenga). *)
 
-open! Core.Std
+open! Core
 open! Import
 
 type t

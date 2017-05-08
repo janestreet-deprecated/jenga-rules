@@ -1,4 +1,4 @@
-open Core.Std
+open Core
 open Import
 
 (* Terminology note:
@@ -190,7 +190,7 @@ let known_deps ~dir ~flags ~includes =
   ))
 
 let get_system_include_dirs =
-  let open Async.Std in
+  let open Async in
   let f flavor =
     run_action_now_stdout (
       bashf ~dir:Path.the_root

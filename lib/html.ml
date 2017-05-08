@@ -1,5 +1,5 @@
 
-open Core.Std
+open Core
 
 open Jbuild_types
 open Import

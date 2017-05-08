@@ -1,4 +1,4 @@
-open Core.Std
+open Core
 open Import
 
 let help_filename ~dir name = relative ~dir (name ^ "-help-for-review.org")

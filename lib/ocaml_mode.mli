@@ -2,7 +2,7 @@
 (** An experiment to implement bytecode rules using the terminology of
     native compilation and the code of native rules. *)
 
-open! Core.Std
+open! Core
 
 module type S = sig
   val cmx        : string

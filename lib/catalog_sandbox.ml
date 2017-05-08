@@ -1,4 +1,4 @@
-open! Core.Std
+open! Core
 open! Import
 
 let sandbox_dir = Path.root_relative "app/catalog/sandbox/bin"

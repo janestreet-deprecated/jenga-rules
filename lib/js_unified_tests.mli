@@ -2,7 +2,7 @@
     We also provide rules to create a script run-unified-tests that people can run by
     hand, for convenience. *)
 
-open! Core.Std
+open! Core
 open! Import
 
 type t =

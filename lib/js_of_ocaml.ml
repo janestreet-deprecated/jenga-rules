@@ -1,4 +1,4 @@
-open Core.Std
+open Core
 open Import
 open Ocaml_types
 
@@ -112,6 +112,10 @@ let has_separate_sourcemap_file = function
   | "--source-map" | "-source-map" -> true
   | _ -> false
 
+let source_map_disabled = function
+  | "--no-sourcemap" | "--no-source-map" -> true
+  | _ -> false
+
 let exists_in_list ~pattern =
   let rec loop l =
     if List.is_prefix ~prefix:pattern ~equal:String.equal l
@@ -144,11 +148,9 @@ let normalize_flags ~sourcemap devel flags =
   in
   List.concat (flags :: extra)
 
-let disable_sourcemap = String.equal "--no-sourcemap"
 
 let rule_aux ~artifacts ~sourcemap ~devel ~build_info ~hg_version ~dir ~flags ~other_flags ~target ~js_files rest_dep rest =
-  let sourcemap = not (List.exists flags ~f:disable_sourcemap) && sourcemap in
-  let flags = List.filter flags ~f:(fun x -> not (disable_sourcemap x)) in
+  let sourcemap = not (List.exists flags ~f:source_map_disabled) && sourcemap in
   let flags = normalize_flags ~sourcemap devel flags in
   let targets =
     if List.exists flags ~f:has_separate_sourcemap_file

@@ -1,4 +1,4 @@
-open! Core.Std
+open! Core
 open Import
 open Ocaml_types
 
@@ -63,7 +63,7 @@ let find_prog =
     | None -> []
     | Some s -> String.split s ~on:path_sep
   in
-  let open Async.Std in
+  let open Async in
   fun name ->
     Deferred.List.find_map path ~f:(fun dir ->
       let fn = dir ^/ name in

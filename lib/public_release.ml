@@ -1,4 +1,4 @@
-open Core.Std
+open Core
 open Import
 open Jbuild_types
 open Ocaml_types

@@ -1,7 +1,7 @@
 (** Compilation of the ocamldoc-style comments into actual documentation (using odoc, not
     ocamldoc). *)
 
-open! Core.Std
+open! Core
 open Import
 open Ocaml_types
 

@@ -1,4 +1,4 @@
-open Core.Std
+open Core
 open! Import
 
 module PP : sig
@@ -547,9 +547,10 @@ module Library_conf = struct
     t
 
   let to_lib_in_the_tree ~dir t : Ocaml_types.Lib_in_the_tree.t =
-    { name        = t.name
-    ; public_name = t.public_name
-    ; source_path = dir
+    { name                    = t.name
+    ; public_name             = t.public_name
+    ; supported_in_javascript = Option.is_some t.js_of_ocaml
+    ; source_path             = dir
     }
 end
 

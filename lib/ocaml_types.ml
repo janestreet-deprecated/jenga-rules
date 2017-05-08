@@ -1,4 +1,4 @@
-open! Core.Std
+open! Core
 open! Import
 
 (** library names must be identifiers starting with a lowercase letter
@@ -94,9 +94,10 @@ module Artifact_name : Identifiable = String
 
 module Lib_in_the_tree = struct
   type t =
-    { name                  : LN.t
-    ; source_path           : Path.t
-    ; public_name           : Findlib_package_name.t sexp_option
+    { name                    : LN.t
+    ; source_path             : Path.t
+    ; supported_in_javascript : bool
+    ; public_name             : Findlib_package_name.t sexp_option
     }
   [@@deriving sexp, compare, fields]
 

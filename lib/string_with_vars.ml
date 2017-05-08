@@ -1,4 +1,4 @@
-open! Core.Std
+open! Core
 
 type var_syntax = Parens | Braces [@@deriving sexp_of, compare]
 

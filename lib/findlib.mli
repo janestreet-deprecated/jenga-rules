@@ -5,7 +5,7 @@
     findlib library.
 *)
 
-open! Core.Std
+open! Core
 open! Import
 open! Ocaml_types
 

@@ -1,4 +1,4 @@
-open! Core.Std
+open! Core
 open! Import
 
 (* We register this variable so that [jenga env set] can change it. This lets us push

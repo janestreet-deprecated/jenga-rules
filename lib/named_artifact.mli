@@ -2,7 +2,7 @@
     to hardcode their exact locations. These named artifacts will be looked up
     appropriately (in the tree, or for the public release, possibly in the PATH or in
     findlib). *)
-open! Core.Std
+open! Core
 open Import
 open Ocaml_types
 

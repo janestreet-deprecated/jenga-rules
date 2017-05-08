@@ -3,7 +3,7 @@
     Variables cannot contain "${", "$(", ")" or "}". For instance in "$(cat ${x})", only
     "${x}" will be considered a variable, the rest is text. *)
 
-open! Core.Std
+open! Core
 
 type t [@@deriving of_sexp]
 

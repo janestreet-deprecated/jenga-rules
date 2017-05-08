@@ -1,4 +1,4 @@
-open Core.Std
+open Core
 include (Jenga_lib.Api
          : module type of struct include Jenga_lib.Api end
          with module Var := Jenga_lib.Api.Var

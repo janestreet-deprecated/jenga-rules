@@ -1,4 +1,4 @@
-open Core.Std
+open Core
 open Import
 open Jbuild_types
 open Ocaml_types
@@ -2165,6 +2165,7 @@ module MC = struct
     exists_ml : bool;
     exists_mli : bool;
     wrapped : bool;
+    compat32 : bool;
     findlib_include_flags : string list Findlib.Query.t;
   }
 end
@@ -2207,6 +2208,7 @@ module Ppx_info = struct
     { uses_inline_test  : bool
     ; uses_inline_bench : bool
     ; uses_here         : bool
+    ; uses_js_style     : bool
     }
   [@@deriving sexp]
 
@@ -2219,17 +2221,20 @@ module Ppx_info = struct
       let uses_inline_test = ref false in
       let uses_inline_bench = ref false in
       let uses_here = ref false in
+      let uses_js_style = ref false in
       List.iter libs ~f:(fun lib ->
         match Lib_dep.to_string lib with
         | "ppx_here_expander" -> uses_here         := true
         | "ppx_expect"        -> uses_inline_test  := true
         | "ppx_inline_test"   -> uses_inline_test  := true
         | "ppx_bench"         -> uses_inline_bench := true
+        | "ppx_js_style"      -> uses_js_style     := true
         | _ -> ());
       let info =
         { uses_inline_test  = !uses_inline_test
         ; uses_inline_bench = !uses_inline_bench
         ; uses_here         = !uses_here
+        ; uses_js_style     = !uses_js_style
         }
       in
       Action.save ~target (Sexp.to_string [%sexp (info : t)])
@@ -2321,6 +2326,7 @@ let get_ppx_command
       ~can_setup_inline_runners
       ~flags (pps:PP.t list)
       ~enforce_style
+      ~compat32
       ~name
   : (string * string list) Dep.t =
   let ppxset = PPXset.create pps in
@@ -2349,6 +2355,7 @@ let get_ppx_command
          else [])
       ; flags
       ; kind_flag
+      ; if compat32 && info.uses_js_style then ["-compat-32"] else  []
       ; if inline_test_color then [] else ["-no-color"]
       ; if enforce_style then
           ["-styler"; reach_from ~dir (relative ~dir:Config.script_dir "apply-style")]
@@ -2376,7 +2383,7 @@ let get_pp_com_args ~(kind:ml_kind) ~mc ~name : string list Dep.t =
   | Command string -> Dep.return ["-pp"; string]
   | PP (pps, flags) ->
     get_ppx_command ~name ~kind:(Some kind) ~dir ~libname
-      ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style pps
+      ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style ~compat32:mc.compat32 pps
     *>>| fun (prog, args) ->
     let args =
       ["-as-pp";
@@ -2399,7 +2406,7 @@ let generate_pp_using_ppx mc ~kind ~name ~pps ~flags =
     let deps = Dep.path source :: pp_deps in
     Dep.both
       (get_ppx_command ~name ~kind:(Some kind) ~dir ~libname
-         ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style pps)
+         ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style ~compat32:mc.compat32 pps)
       (Dep.all_unit deps)
     *>>| fun ((prog, args), ()) ->
     let args =
@@ -2443,7 +2450,7 @@ let call_lint_tool mc ~lint ~kind ~name =
   let action =
     Dep.both
       (get_ppx_command ~name ~kind:(Some kind) ~dir ~libname
-         ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style pps)
+         ~can_setup_inline_runners ~flags ~enforce_style:dc.enforce_style ~compat32:mc.compat32 pps)
       (Dep.all_unit deps)
     *>>| fun ((prog, args), ()) ->
     let args =
@@ -2535,7 +2542,7 @@ let gen_dfile kind ~disallowed_module_dep mc ~name ~actual_modules =
         "this module apparently has forbidden dependencies: %s. If these are not \
          actual dependencies of your module, you can make ocamldep understand it by \
          qualifying module paths: for instance instead of %s.something, using \
-         Library.Std.%s.something."
+         Library.%s.something."
         (String.concat ~sep:", " error_messages) bad_module bad_module ()
     | [] ->
 
@@ -2701,12 +2708,13 @@ let native_compile_ml mc ~name ~deps_shared_across_lib =
       ])
   )
 
-let byte_compile_ml mc ~name ~deps_shared_across_lib =
+let byte_compile_ml mc ~compat32 ~name ~deps_shared_across_lib =
   let {MC. dc; dir; libname; wrapped; exists_mli; _ } = mc in
   let kind = ML in
   let pp_deps = get_pp_deps ~mc in
   let pp_args = get_pp_com_args ~kind ~mc ~name in
   let {DC. ocamlflags; ocamlcflags; _} = dc in
+  let ocamlcflags = if compat32 then "-compat-32" :: ocamlcflags else ocamlcflags in
   let ocamlflags = List.filter ocamlflags ~f:(function "-bin-annot" -> false | _ -> true) in
   let ml = BN.suffixed ~dir name ".ml" in
   let prefixed_name = PN.of_barename ~wrapped ~libname name in
@@ -2814,7 +2822,7 @@ let mem_of_list l =
 
 let setup_ml_compile_rules
       ?(disallowed_module_dep = fun _ -> None)
-      ~js_of_ocaml
+      ~js_of_ocaml ~compat32
       dc ~dir ~libname ~wrapped ~for_executable ~can_setup_inline_runners
       ~preprocessor_deps ~preprocess_spec ~names_spec ~libraries_written_by_user
       ~lint
@@ -2844,6 +2852,7 @@ let setup_ml_compile_rules
       exists_mli = names_spec_has_intf name;
       wrapped;
       findlib_include_flags;
+      compat32
     }
   in
   let compilation_rules =
@@ -2867,6 +2876,7 @@ let setup_ml_compile_rules
           | None -> []
           | Some js_of_ocaml -> [js_compile_cmo mc ~js_of_ocaml ~name]
         in
+        let compat32 = Option.is_some js_of_ocaml in
         List.concat [
           [gen_cmideps dc name];
           (if for_executable
@@ -2876,7 +2886,7 @@ let setup_ml_compile_rules
              generate_pp mc ~kind:ML ~name;
              javascript_rule;
              [ gen_dfile ML ~disallowed_module_dep mc ~name ~actual_modules;
-               byte_compile_ml mc ~name ~deps_shared_across_lib;
+               byte_compile_ml mc ~compat32 ~name ~deps_shared_across_lib;
                native_compile_ml mc ~name ~deps_shared_across_lib;
                infer_mli_auto mc ~name ~deps_shared_across_lib];
            ]
@@ -3106,8 +3116,9 @@ let library_module_order ~dir ~impls ~intfs ~libname =
  building ocaml libraries - archiving
 ----------------------------------------------------------------------*)
 
-let ocaml_library_archive dc ~dir ~impls ~wrapped ~libname ~flags =
+let ocaml_library_archive dc ~compat32 ~dir ~impls ~wrapped ~libname ~flags =
   let {DC. ocamlflags; ocamlcflags; ocamloptflags; _} = dc in
+  let ocamlcflags = if compat32 then "-compat-32" :: ocamlcflags else ocamlcflags in
   assert (not wrapped ==> Int.(List.length impls = 0));
   let intf_of_lib_exists = intf_of_lib_exists ~modules:impls ~libname in
   let impls = List.map impls ~f:(PN.of_barename ~wrapped ~libname) in
@@ -3162,7 +3173,7 @@ module Hg_version = struct
 
   let hg_dirstate_suffix =
     Dep.deferred (fun () ->
-      let open Async.Std in
+      let open Async in
       run_action_now_stdout (
         Action.process ~ignore_stderr:true ~dir:Path.the_root
           hg_prog ["showconfig"; "jhg.omake-dirstate-suffix";]
@@ -3220,7 +3231,7 @@ module Hg_version = struct
   ;;
 
   let force_hg_version_out_to_be_up_to_date () =
-    let open Async.Std in
+    let open Async in
     Sys.readdir (Path.to_absolute_string Path.the_root)
     >>= fun subdirs ->
     Deferred.List.iter ("." :: Array.to_list subdirs) ~f:(fun dir ->
@@ -3357,6 +3368,7 @@ let build_info_rules ~dir ~exe ~suf ~sexp_dep =
         in
         [%sexp
           { x_library_inlining = (x_library_inlining : bool);
+            portable_int63 = (portable_int63 : bool);
             ocaml_version = (Compiler_selection.compiler_dir : string);
             executable_path = (suffixed ~dir exe suf : Path.t);
             build_system = "jenga";
@@ -3531,9 +3543,10 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       ~test_or_bench
       ~js_of_ocaml =
   let ocamlopt_path, ocamloptflags =
-    match Mode.which with
-    | `Byte -> ocamlc_path, dc.ocamlcflags
-    | `Native -> ocamlopt_path, dc.ocamloptflags
+    match Mode.which, js_of_ocaml with
+    | `Byte,   Some _ -> ocamlc_path, "-compat-32" :: dc.ocamlcflags
+    | `Byte,   None   -> ocamlc_path, dc.ocamlcflags
+    | `Native, _      -> ocamlopt_path, dc.ocamloptflags
   in
   let hg_version_o = relative ~dir (Hg_version.base ~base:(exe ^ Mode.exe) ^ ".o") in
   let build_info_o = relative ~dir (build_info_base ~base:(exe ^ Mode.exe) ^ ".o") in
@@ -3881,7 +3894,7 @@ let executables_rules (dc : DC.t) ~dir e_conf =
   in
   let compile_rules =
     setup_ml_compile_rules
-      ~js_of_ocaml
+      ~js_of_ocaml ~compat32:(Option.is_some js_of_ocaml)
       dc ~dir ~libname ~wrapped ~for_executable ~can_setup_inline_runners
       ~preprocessor_deps ~preprocess_spec ~names_spec ~libraries_written_by_user
       ~disallowed_module_dep:(fun x ->
@@ -3927,7 +3940,7 @@ let executables_rules (dc : DC.t) ~dir e_conf =
             | exe_suf, (`Exe | `So) -> [exe_suf]
           in
           let not_exe_sufs, exe_sufs =
-            if javascript_enabled && Option.is_some js_of_ocaml
+            if javascript_enabled  && Option.is_some js_of_ocaml
             then [".cmo"; ".cmx"], Js_of_ocaml.exe_suf :: exe_suf
             else [".cmx"], exe_suf
           in
@@ -4858,7 +4871,7 @@ let merlin_ppx_directives ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
       | `Cant_express -> [PP.jane], []
     in
     get_ppx_command ~name:(BN.of_string "fake") ~kind:None ~dir
-      ~can_setup_inline_runners:true ~enforce_style:false
+      ~can_setup_inline_runners:true ~enforce_style:false ~compat32:false
       ~flags ~libname:(LN.of_string "fake_for_merlin") pps
     *>>= fun (_relative_exe, args) ->
     let exe_path = ppx_executable pps in
@@ -4981,8 +4994,8 @@ let library_rules_javascript (dc : DC.t) ~dir ~js_of_ocaml ~libname =
          *>>| fun libs ->
          let bad_libs =
            List.filter libs ~f:(function
-             | In_the_tree _ ->
-               false
+             | In_the_tree lib ->
+               not lib.supported_in_javascript
              | From_compiler_distribution v ->
                not (From_compiler_distribution.supported_in_javascript v)
              | Findlib_package _ ->
@@ -5040,6 +5053,7 @@ let library_rules dc ~dir library_conf =
       (* Don't setup [.cmo -> .cmo.js] rule for libraries.
          It's not needed by separate compilation. *)
       ~js_of_ocaml:None
+      ~compat32:(Option.is_some library_conf.js_of_ocaml)
       ~lint:library_conf.lint
   in
   let c_names = Library_conf.c_names library_conf in
@@ -5092,7 +5106,7 @@ let library_rules dc ~dir library_conf =
         failwithf
           !"Trying to build a .cmxs for library %{LN} but '-nodynlink' is set."
           libname ();
-      Async.Std.Deferred.unit
+      Async.Deferred.unit
     in
     let deps_paths =
       let suffixes = [".cmxa"; ".a"] in
@@ -5139,12 +5153,13 @@ let library_rules dc ~dir library_conf =
       ; intfs
       ; bin_annot = has_bin_annot; }
   in
+  let compat32 = Option.is_some library_conf.js_of_ocaml in
   let pack_maybe_archive_rules =
     if not wrapped
-    then ocaml_library_archive dc ~wrapped ~dir ~libname ~flags:lib_flags ~impls:[]
+    then ocaml_library_archive dc ~compat32 ~wrapped ~dir ~libname ~flags:lib_flags ~impls:[]
     else
       renaming_rules ~dir ~libname ~modules
-      @ ocaml_library_archive dc ~wrapped ~dir ~libname ~flags:lib_flags
+      @ ocaml_library_archive dc ~compat32 ~wrapped ~dir ~libname ~flags:lib_flags
           ~impls:(internal_intf_of_lib_impl :: impls)
   in
   let js_rules =
@@ -5644,14 +5659,14 @@ let delete_and_recreate_tmpdir_action =
     tmpdir tmpdir tmpdir
 
 let build_begin () =
-  Async.Std.don't_wait_for (Hg_version.force_hg_version_out_to_be_up_to_date ());
+  Async.don't_wait_for (Hg_version.force_hg_version_out_to_be_up_to_date ());
   run_action_now (
     delete_and_recreate_tmpdir_action
   )
 
 let build_end () =
-  Async.Std.don't_wait_for (Hg_version.force_hg_version_out_to_be_up_to_date ());
-  Async.Std.Deferred.unit
+  Async.don't_wait_for (Hg_version.force_hg_version_out_to_be_up_to_date ());
+  Async.Deferred.unit
 
 let command_lookup_path () =
   let script_dir sub_dir =
@@ -5926,13 +5941,13 @@ let env () = Env.create
   scheme
 
 let check_compiler_exists () =
-  let (>>|) = Async.Std.(>>|) in
-  Async.Std.Sys.is_directory_exn
+  let (>>|) = Async.(>>|) in
+  Async.Sys.is_directory_exn
     Compiler_selection.compiler_bin_dir ~follow_symlinks:true
   >>| function
   | true -> ()
   | false -> failwithf "The following compiler is not installed: %s" Compiler_selection.compiler_dir ()
 
 let setup () =
-  let open Async.Std in
+  let open Async in
   check_compiler_exists () >>| env

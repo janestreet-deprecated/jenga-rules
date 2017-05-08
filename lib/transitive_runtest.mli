@@ -4,7 +4,7 @@
     This is different from runtest, because runtest follows the directory structure
     rather than the dependency structure. *)
 
-open! Core.Std
+open! Core
 open! Import
 open Ocaml_types
 
