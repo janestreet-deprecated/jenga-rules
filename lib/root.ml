@@ -177,8 +177,35 @@ let stable_build_info =
               | `Fast_build -> true
               | `Fast_exe | `Default -> false)
 
+(* LINK_EXECUTABLES=true means that executables should be linked in DEFAULT.
+   LINK_EXECUTABLES=false means that executables shouldn't be linked in DEFAULT,
+   (but can still be linked when other rules depend on them).
+   LINK_EXECUTABLES=check means that executables should be linked in DEFAULT,
+   but only for the purpose of finding link-time errors. The link check will only
+   keep the executable on disk for the duration of the check (or even not at all),
+   and if the executable is needed for other reasons like a test, then it will be
+   linked again. This allows to find all link errors without having to fill the disk
+   and the kernel disk cache with useless junk. *)
 let link_executables =
-  Var.peek_register_bool "LINK_EXECUTABLES" ~default:true
+  match
+    Var.peek
+      (Var.register_enumeration
+         "LINK_EXECUTABLES"
+         ~choices:(String.Map.of_alist_exn
+                     [ "true", `True
+                     ; "false", `False
+                     ; "check", `Check ])
+         ~default:"true"
+         ~fallback:(fun _ -> None))
+  with
+  | Ok a -> a
+  | Error (`Bad s) -> failwithf "invalid LINK_EXECUTABLES %s" s ()
+;;
+
+let link_executables_on_disk =
+  match link_executables with
+  | `True -> true
+  | `False | `Check -> false
 
 let x_library_inlining =
   Var.peek_register_bool "X_LIBRARY_INLINING"
@@ -3529,7 +3556,7 @@ let get_libs_for_exe libmap ~link_libdeps_of ~libs_for_plugins ~force_link =
                                         ~f:Lib_dep.of_lib_in_the_tree)
 ;;
 
-let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
+let staged_link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       ~more_deps
       ~link_flags
       ~ocaml_plugin_handling
@@ -3574,90 +3601,86 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
     Findlib.include_flags ~dir (exe ^ Mode.exe) libs_maybe_forced_dep
   in
 
-  let exe_rule =
-    let target = suffixed ~dir exe Mode.exe in
-    Rule.create ~targets:[target] (
-      let exe_maybe_tmp = basename target in
-      libs_maybe_forced_dep
-      *>>= fun libs_maybe_forced ->
-      compute_objs *>>= fun objs ->
-      let build_info_dep, build_info_args =
-        if not suppress_build_info &&
-           build_info_is_required libs_maybe_forced
-        then [Dep.path build_info_o],
-             [ basename build_info_o ]
-        else [], []
-      in
-      let version_util_args =
-        if not suppress_version_util &&
-           Hg_version.is_required libs_maybe_forced
-        then [ basename hg_version_o ]
-        else []
-      in
-      let deps =
-        link_deps_of_libs (module Mode) ~dir ~libs_maybe_forced ~force_link
-           ~build_libs_DEFAULT
-        @ link_deps_of_version_util (module Mode) ~dir ~suppress_version_util
-            ~libs:libs_maybe_forced exe
-        @ link_deps_of_objs (module Mode) objs
-        @ build_info_dep
-        @ ocaml_plugin_deps
-        @ more_deps
-      in
-      Findlib.Query.result_and findlib_include_flags
-        (Findlib.Query.result_and findlib_archives
-           (Dep.all_unit deps))
-      *>>| fun (external_include_flags, (external_archives, ())) ->
-      let sub_cmxs_in_correct_order =
-        List.map objs ~f:(fun (obj_dir, base) ->
-          Path.reach_from ~dir (PN.suffixed ~dir:obj_dir base Mode.cmx)) in
-      let lib_cmxas =
-        List.concat_map libs_maybe_forced ~f:(fun lib_dep ->
-          match lib_dep, force_link with
-          | In_the_tree lib, Some lib' when LN.equal lib.name lib'.name ->
-            [ "-I"; "."; LN.to_string lib.name ^ ".linkall" ^ Mode.cmxa]
-          | _ ->
-            LL.link_flags ~dir lib_dep ~cmxa:Mode.cmxa)
-      in
-      let link_flags =
-        if String.is_suffix Mode.exe ~suffix:".so"
-        || String.is_suffix Mode.exe ~suffix:".o"
-        then
-          [ "-ccopt"; "-ldl"
-          ; "-ccopt"; "-lm"
-          ; "-ccopt"; "--shared"
-          ; "-ccopt"; "-fPIC"
-          ; "-runtime-variant"; "_pic"
-          ; "-output-complete-obj"
-          ] @ link_flags
-        else link_flags
-      in
-      Action.process ~dir
-        ocamlopt_path
-        (List.concat [
-          dc.ocamlflags; ocamloptflags;
-          dc.link_flags;
-          (* The assumption is that code in the tree depends on external packages but not
-             the opposite, so external packages must come first *)
-          external_include_flags;
-          external_archives;
-          link_flags;
-          (* Using g++ instead of gcc to link in the c++ stdlib if needed. *)
-          use_compiler_flavor `Cxx;
-          (* We would use --as-needed in bytecode as well, but it doesn't work because
-             the configure script doesn't properly detect which libraries define what
-             symbols (http://caml.inria.fr/mantis/view.php?id=7164) *)
-          (match Mode.which with
-           | `Native -> ["-ccopt"; "-Wl,--as-needed"]
-           | `Byte -> ["-custom"]);
-          build_info_args;
-          version_util_args;
-          ocaml_plugin_flags;
-          lib_cmxas;
-          sub_cmxs_in_correct_order;
-          ["-o"; exe_maybe_tmp];
-        ])
-    )
+  let link_action ~dash_o =
+    libs_maybe_forced_dep
+    *>>= fun libs_maybe_forced ->
+    compute_objs *>>= fun objs ->
+    let build_info_dep, build_info_args =
+      if not suppress_build_info &&
+         build_info_is_required libs_maybe_forced
+      then [Dep.path build_info_o],
+           [ basename build_info_o ]
+      else [], []
+    in
+    let version_util_args =
+      if not suppress_version_util &&
+         Hg_version.is_required libs_maybe_forced
+      then [ basename hg_version_o ]
+      else []
+    in
+    let deps =
+      link_deps_of_libs (module Mode) ~dir ~libs_maybe_forced ~force_link
+         ~build_libs_DEFAULT
+      @ link_deps_of_version_util (module Mode) ~dir ~suppress_version_util
+          ~libs:libs_maybe_forced exe
+      @ link_deps_of_objs (module Mode) objs
+      @ build_info_dep
+      @ ocaml_plugin_deps
+      @ more_deps
+    in
+    Findlib.Query.result_and findlib_include_flags
+      (Findlib.Query.result_and findlib_archives
+         (Dep.all_unit deps))
+    *>>| fun (external_include_flags, (external_archives, ())) ->
+    let sub_cmxs_in_correct_order =
+      List.map objs ~f:(fun (obj_dir, base) ->
+        Path.reach_from ~dir (PN.suffixed ~dir:obj_dir base Mode.cmx)) in
+    let lib_cmxas =
+      List.concat_map libs_maybe_forced ~f:(fun lib_dep ->
+        match lib_dep, force_link with
+        | In_the_tree lib, Some lib' when LN.equal lib.name lib'.name ->
+          [ "-I"; "."; LN.to_string lib.name ^ ".linkall" ^ Mode.cmxa]
+        | _ ->
+          LL.link_flags ~dir lib_dep ~cmxa:Mode.cmxa)
+    in
+    let link_flags =
+      if String.is_suffix Mode.exe ~suffix:".so"
+      || String.is_suffix Mode.exe ~suffix:".o"
+      then
+        [ "-ccopt"; "-ldl"
+        ; "-ccopt"; "-lm"
+        ; "-ccopt"; "--shared"
+        ; "-ccopt"; "-fPIC"
+        ; "-runtime-variant"; "_pic"
+        ; "-output-complete-obj"
+        ] @ link_flags
+      else link_flags
+    in
+    Action.process ~dir
+      ocamlopt_path
+      (List.concat [
+        dc.ocamlflags; ocamloptflags;
+        dc.link_flags;
+        (* The assumption is that code in the tree depends on external packages but not
+           the opposite, so external packages must come first *)
+        external_include_flags;
+        external_archives;
+        link_flags;
+        (* Using g++ instead of gcc to link in the c++ stdlib if needed. *)
+        use_compiler_flavor `Cxx;
+        (* We would use --as-needed in bytecode as well, but it doesn't work because
+           the configure script doesn't properly detect which libraries define what
+           symbols (http://caml.inria.fr/mantis/view.php?id=7164) *)
+        (match Mode.which with
+         | `Native -> ["-ccopt"; "-Wl,--as-needed"]
+         | `Byte -> ["-custom"]);
+        build_info_args;
+        version_util_args;
+        ocaml_plugin_flags;
+        lib_cmxas;
+        sub_cmxs_in_correct_order;
+        ["-o"; dash_o];
+      ])
   in
 
   let js_of_ocaml_rules =
@@ -3715,7 +3738,6 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
     ])
   in
   List.concat [
-    [ exe_rule ];
     js_of_ocaml_rules;
     List.concat_map ~f:Findlib.Query.rules
       [ findlib_archives
@@ -3728,7 +3750,40 @@ let link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
     (if suppress_build_info
      then []
      else build_info_rules ~dir ~exe ~suf:Mode.exe ~sexp_dep);
-  ]
+  ], link_action
+;;
+
+let link (module Mode : Ocaml_mode.S) dc ~dir
+      ~more_deps
+      ~link_flags
+      ~ocaml_plugin_handling
+      ~link_libdeps_of
+      ~suppress_build_info
+      ~suppress_version_util
+      ~build_libs_DEFAULT
+      ~compute_objs
+      ~exe
+      ~force_link
+      ~test_or_bench
+      ~js_of_ocaml =
+  let auxillary_rules, link_action =
+    staged_link (module Mode) dc ~dir
+      ~more_deps
+      ~link_flags
+      ~ocaml_plugin_handling
+      ~link_libdeps_of
+      ~suppress_build_info
+      ~suppress_version_util
+      ~build_libs_DEFAULT
+      ~compute_objs
+      ~exe
+      ~force_link
+      ~test_or_bench
+      ~js_of_ocaml
+  in
+  let target = suffixed ~dir exe Mode.exe in
+  Rule.create ~targets:[target] (link_action ~dash_o:(basename target)) :: auxillary_rules
+;;
 
 (*----------------------------------------------------------------------
  executable_rules
@@ -3791,29 +3846,57 @@ let replace_exe_suffix mode ~only_shared_object : Ocaml_mode.t =
 
 let link_executable (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir ~wrapped ~libname
       ~link_flags ~projections_check ~allowed_ldd_dependencies ~js_of_ocaml
-      ~only_shared_object name =
+      ~only_shared_object ~can_run_link_check name =
   let (module Mode : Ocaml_mode.S) =
     replace_exe_suffix (module Mode) ~only_shared_object
   in
   let exe = BN.to_string name in
   let link_rules =
-    link (module Mode) (dc : DC.t) ~dir
-        ~more_deps:[]
-        ~link_flags
-        ~build_libs_DEFAULT:true
-        ~ocaml_plugin_handling:(ocaml_plugin_handling dc ~dir name)
-        ~suppress_build_info:false
-        ~suppress_version_util:false
-        ~link_libdeps_of:(return [dir, libname])
-        ~compute_objs:
-          (objdeps ~dir name
-           *>>| fun bns ->
-           List.map (bns @ [name]) ~f:(fun name ->
-             dir, PN.of_barename ~wrapped ~libname name))
-        ~exe
-        ~force_link:None
-        ~test_or_bench:false
-        ~js_of_ocaml
+    let auxillary_rules, link_action =
+      staged_link (module Mode) (dc : DC.t) ~dir
+          ~more_deps:[]
+          ~link_flags
+          ~build_libs_DEFAULT:true
+          ~ocaml_plugin_handling:(ocaml_plugin_handling dc ~dir name)
+          ~suppress_build_info:false
+          ~suppress_version_util:false
+          ~link_libdeps_of:(return [dir, libname])
+          ~compute_objs:
+            (objdeps ~dir name
+             *>>| fun bns ->
+             List.map (bns @ [name]) ~f:(fun name ->
+               dir, PN.of_barename ~wrapped ~libname name))
+          ~exe
+          ~force_link:None
+          ~test_or_bench:false
+          ~js_of_ocaml
+    in
+    let normal_link_target = suffixed ~dir exe Mode.exe in
+    let normal_link_rule =
+      Rule.create ~targets:[normal_link_target]
+        (link_action ~dash_o:(basename normal_link_target))
+    in
+    let rules_except_check = normal_link_rule :: auxillary_rules in
+    let check_link_rule =
+      match link_executables with
+      | `True | `False -> None
+      | `Check ->
+        if can_run_link_check
+        then
+          match exe_artifact_in_std_aliases ~only_shared_object with
+          | _, `Cmx -> None
+          | _, (`Exe | `So as exe_or_so) ->
+            (* For shared object, ocamlopt requires a name ending in .so, so given that
+               there are few of these, just link them. *)
+            Some (Rule.alias (Alias.default ~dir)
+                    [ match exe_or_so with
+                      | `Exe -> Dep.action (link_action ~dash_o:"/dev/null")
+                      | `So -> Dep.path normal_link_target ])
+        else None
+    in
+    match check_link_rule with
+    | None -> rules_except_check
+    | Some r -> r :: rules_except_check
   in
   let ldd_check =
     match Mode.which with
@@ -3944,7 +4027,7 @@ let executables_rules (dc : DC.t) ~dir e_conf =
             then [".cmo"; ".cmx"], Js_of_ocaml.exe_suf :: exe_suf
             else [".cmx"], exe_suf
           in
-          if link_executables && e_conf.link_executables
+          if link_executables_on_disk && e_conf.link_executables
           then List.map exe_sufs
                  ~f:(fun suf -> Dep.path (BN.suffixed ~dir name suf))
           else List.map not_exe_sufs
@@ -3955,9 +4038,15 @@ let executables_rules (dc : DC.t) ~dir e_conf =
   in
   let link_rules =
     List.concat_map names ~f:(fun name ->
-      List.concat_map Ocaml_mode.all ~f:(fun ext ->
-        link_executable ext dc ~dir ~wrapped ~libname ~link_flags ~projections_check
-          ~allowed_ldd_dependencies ~js_of_ocaml ~only_shared_object name))
+      List.concat_map Ocaml_mode.all ~f:(fun ((module Mode) as mode) ->
+        let can_run_link_check =
+          not e_conf.skip_from_default
+          && e_conf.link_executables
+          && (match Mode.which with `Native -> true | `Byte -> false)
+        in
+        link_executable mode dc ~dir ~wrapped ~libname ~link_flags ~projections_check
+          ~allowed_ldd_dependencies ~js_of_ocaml ~only_shared_object ~can_run_link_check
+          name))
   in
   let review_help_rules =
     if review_help
@@ -4156,7 +4245,9 @@ let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t
                |> Libmap.resolve_libdep_names_exn dc.libmap)
         libname_for_libdeps
     ; [ Rule.alias (Alias.runtest ~dir) [runtest] ]
-    ; (if link_executables then [ Rule.alias (Alias.default ~dir) [Dep.path exe] ] else [])
+    ; (if link_executables_on_disk
+       then [ Rule.alias (Alias.default ~dir) [Dep.path exe] ]
+       else [])
     ]
 
 (*----------------------------------------------------------------------
@@ -4586,7 +4677,7 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
        :: match alias_for_inline_runners ~dir ~skip_from_default with
           | None -> []
           | Some alias ->
-            if not link_executables
+            if not link_executables_on_disk
             then []
             else [ Rule.alias alias [
                     inline_test_exe_paths *>>= function
@@ -4687,7 +4778,7 @@ let inline_bench_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree =
           | false -> return ()
           | true ->
             let names =
-              if link_executables
+              if link_executables_on_disk
               then [exe; exe ^ ".exe"]
               else []
             in
