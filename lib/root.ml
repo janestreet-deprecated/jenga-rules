@@ -5370,6 +5370,42 @@ module Public_release = Public_release.Make(struct
     let deps_conf_to_deps = Dep_conf_interpret.list_to_depends
   end)
 
+let wikipub_registered_files_in_subdirs ~dir =
+  let rec subdirs_without_upload_to_stanzas ~dir =
+    unignored_subdirs ~dir
+    *>>= fun subdirs ->
+    Dep.List.concat_map subdirs ~f:(fun dir ->
+      User_or_gen_config.load ~dir
+      *>>= fun jbuild_stanzas ->
+      if List.exists jbuild_stanzas ~f:(function
+        | `wikipub (`Upload_to _) -> true
+        | _ -> false)
+      then Dep.return []
+      else subdirs_without_upload_to_stanzas ~dir)
+    *>>| fun subdirs ->
+    dir :: subdirs
+  in
+  subdirs_without_upload_to_stanzas ~dir
+  *>>= fun dirs ->
+  Dep.List.concat_map dirs ~f:(fun dir ->
+    User_or_gen_config.load ~dir
+    *>>= Dep.List.concat_map ~f:(function
+      | `wikipub (#Jbuild_types.Wikipub_conf.sources as wikipub_sources) ->
+        Wikipub.registered_files ~dir wikipub_sources
+      | _ -> Dep.return []))
+;;
+
+let wikipub_scheme ~dir = function
+  | #Jbuild_types.Wikipub_conf.sources as wikipub_sources ->
+    Wikipub.wikipub_sources ~dir wikipub_sources
+  | `Preview_subtree path ->
+    Wikipub.preview ~dir ~preview_root:(Path.relative ~dir (expand_vars ~dir path))
+  | `Upload_to to_wiki_space ->
+    Wikipub.upload ~dir
+      ~registered_files:(wikipub_registered_files_in_subdirs ~dir)
+      ~to_wiki_space
+;;
+
 let jbuild_rules_with_directory_context dc ~dir jbuilds =
   Scheme.all (
     List.map jbuilds ~f:(fun (j : Jbuild_types.Jbuild.t) ->
@@ -5399,7 +5435,7 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
       | `public_repo conf -> Scheme.rules (Public_release.rules ~artifacts:dc.artifacts ~dir conf)
       | `html conf -> Scheme.rules (Html.rules ~dir conf)
       | `enforce_style conf -> Scheme.rules (enforce_style ~dir conf)
-      | `wikipub wikipub -> Wikipub.rules_for_individual_files ~dir wikipub
+      | `wikipub wikipub -> wikipub_scheme ~dir wikipub
     )
   )
 
@@ -5951,7 +5987,7 @@ let ocaml_version_file_rule =
     (Dep.contents ocaml_version_file_source_path
      *>>| fun version_on_disk ->
      let version_on_disk = String.strip version_on_disk in
-     let expected_version = Compiler_selection.vanilla_major_version in
+     let expected_version = Compiler_selection.default_version in
      if expected_version <> version_on_disk
      then failwithf !"%{Path} contains %s instead of %s"
             ocaml_version_file_source_path version_on_disk expected_version ()
@@ -5959,46 +5995,26 @@ let ocaml_version_file_rule =
 
 let root_only_scheme =
   let dir = Path.the_root in
-  let wikipub_conf =
-    return ()
-    *>>= fun () ->
-    deep_unignored_subdirs ~dir
-    *>>= fun dirs ->
-    Dep.List.concat_map dirs ~f:(fun dir ->
-      User_or_gen_config.load ~dir
-      *>>| List.filter_map ~f:(function
-        | `wikipub wikipub ->
-          Some (
-            match wikipub with
-            | `Files files ->
-              `Fst (List.map files ~f:(relative ~dir))
-            | `Preview_subtree subtree ->
-              `Snd (Path.relative ~dir (expand_vars ~dir subtree))
-            | `Standard_formats ->
-              `Trd dir
-          )
-        | _ -> None))
-    *>>= fun uploads_and_previews ->
-    let upload_files, preview_subdirs_of, upload_standard_formats_in =
-      List.partition3_map uploads_and_previews ~f:Fn.id
-    in
-    Wikipub.create
-      ~upload_files:(List.concat upload_files)
-      ~upload_standard_formats_in
-      ~preview_subdirs_of
-  in
-  Scheme.all [
-    Scheme.sources [ ocaml_version_file_source_path ];
-    Scheme.rules ([
-      ocaml_bin_file_rule ~prefix:"omake-";
-      alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"omake-");
-      ocaml_bin_file_rule ~prefix:"";
-      alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"");
-      ocaml_version_file_rule;
-      alias_dot_filename_hack ~dir (Path.basename ocaml_version_file_output_path);
-    ] @ Wikipub.rules_for_the_root ~dir wikipub_conf
-    )
-  ]
+  Scheme.all
+    [ Scheme.sources [ ocaml_version_file_source_path
+                     ; relative ~dir "jbuild"
+                     ; relative ~dir "jbuild-ignore"
+                     ]
+    ; Scheme.rules [
+        ocaml_bin_file_rule ~prefix:"omake-";
+        alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"omake-");
+        ocaml_bin_file_rule ~prefix:"";
+        alias_dot_filename_hack ~dir (ocaml_bin_file ~prefix:"");
+        ocaml_version_file_rule;
+        alias_dot_filename_hack ~dir (Path.basename ocaml_version_file_output_path);
+      ]
+    ; Scheme.dep (
+        User_or_gen_config.load ~dir
+        *>>| fun jbuild_stanzas ->
+        Scheme.all (List.map jbuild_stanzas ~f:(function
+          | `wikipub wikipub_conf -> wikipub_scheme ~dir wikipub_conf
+          | _ -> Scheme.empty)))
+    ]
 
 let scheme ~dir : Env.Per_directory_information.t =
   (* Never build or call [artifacts] within any subtree of an .hg, .git or .fe *)

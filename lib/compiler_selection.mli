@@ -12,7 +12,7 @@ val compiler_dir : string
     use it to make a "best guess" regarding which version of merlin to use
     when the .omake-ocaml-bin file is not present (i.e. when the tree hasn't
     been compiled yet). *)
-val vanilla_major_version : string
+val default_version : string
 
 val odoc_minor_version : string
 

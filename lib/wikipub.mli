@@ -5,17 +5,20 @@
 open! Core
 open! Import
 
-type t
+val registered_files
+  : dir : Path.t
+  -> Jbuild_types.Wikipub_conf.sources
+  -> Path.t list Dep.t
 
-val create
-  :  preview_subdirs_of : Path.t list
-  -> upload_files : Path.t list
-  -> upload_standard_formats_in : Path.t list
-  -> t Dep.t
-
-val rules_for_individual_files : dir : Path.t -> Jbuild_types.Wikipub_conf.t -> Scheme.t
-
-val rules_for_the_root
+val wikipub_sources
   :  dir : Path.t
-  -> t Dep.t
-  -> Rule.t list
+  -> Jbuild_types.Wikipub_conf.sources
+  -> Scheme.t
+
+val preview : dir : Path.t -> preview_root : Path.t -> Scheme.t
+
+val upload
+  :  dir              : Path.t
+  -> registered_files : Path.t list Dep.t
+  -> to_wiki_space    : string
+  -> Scheme.t

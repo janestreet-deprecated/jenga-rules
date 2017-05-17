@@ -18,6 +18,7 @@ let get_bool key = match Map.find config key with
 
 
 let major_version = get_conf "version"
+let default_version = major_version
 
 let compiler_bin_dir = Filename.dirname (get_conf "standard_runtime")
 let compiler_stdlib_dir = get_conf "standard_library_default"

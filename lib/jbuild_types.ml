@@ -714,7 +714,7 @@ end
 module Wikipub_conf = struct
   (* These stanzas should be used in directories containing wikipub documents. They define
      what documents wikipub should upload to the wiki. *)
-  type wikipub_sources =
+  type sources =
     (* Upload exactly the listed files, which should be in the local directory. *)
     [ `Files of string list
     (* Upload all files in this directory which wikipub knows how to process. *)
@@ -731,7 +731,8 @@ module Wikipub_conf = struct
        causes a full upload every time regardless of which files changed.
     *)
     [ `Preview_subtree of String_with_vars.t
-    | wikipub_sources
+    | `Upload_to of string
+    | sources
     ] [@@deriving of_sexp]
 end
 
