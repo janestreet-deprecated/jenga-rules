@@ -15,10 +15,10 @@ val wikipub_sources
   -> Jbuild_types.Wikipub_conf.sources
   -> Scheme.t
 
-val preview : dir : Path.t -> preview_root : Path.t -> Scheme.t
-
 val upload
   :  dir              : Path.t
+  (** N.B. Not all [preview] paths are in the subtree of [dir]. *)
+  -> preview          : Path.t list Dep.t
   -> registered_files : Path.t list Dep.t
   -> to_wiki_space    : string
   -> Scheme.t

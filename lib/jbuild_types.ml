@@ -722,7 +722,7 @@ module Wikipub_conf = struct
     ] [@@deriving of_sexp]
 
   type t =
-    (* [Preview_subtree _] should be used in [jenga/start/jbuild], e.g.,
+    (* [Preview_subtree _] can only be used used in [jenga/start/jbuild], e.g.,
        (wikipub (Preview_subtree "${ROOT}/app/wikipub/doc"))
        It instructs jenga to upload the documents to the user's personal space in the dev
        wiki. It must be used in conjunction with [wikipub_sources].

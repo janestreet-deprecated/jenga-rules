@@ -5370,41 +5370,53 @@ module Public_release = Public_release.Make(struct
     let deps_conf_to_deps = Dep_conf_interpret.list_to_depends
   end)
 
-let wikipub_registered_files_in_subdirs ~dir =
-  let rec subdirs_without_upload_to_stanzas ~dir =
-    unignored_subdirs ~dir
-    *>>= fun subdirs ->
-    Dep.List.concat_map subdirs ~f:(fun dir ->
+module Wikipub : sig
+  val scheme : dir : Path.t -> Jbuild_types.Wikipub_conf.t -> Scheme.t
+end = struct
+  let registered_files_in_subdirs ~dir =
+    let rec subdirs_without_upload_to_stanzas ~dir =
+      unignored_subdirs ~dir
+      *>>= fun subdirs ->
+      Dep.List.concat_map subdirs ~f:(fun dir ->
+        User_or_gen_config.load ~dir
+        *>>= fun jbuild_stanzas ->
+        if List.exists jbuild_stanzas ~f:(function
+          | `wikipub (`Upload_to _) -> true
+          | _ -> false)
+        then Dep.return []
+        else subdirs_without_upload_to_stanzas ~dir)
+      *>>| fun subdirs ->
+      dir :: subdirs
+    in
+    subdirs_without_upload_to_stanzas ~dir
+    *>>= fun dirs ->
+    Dep.List.concat_map dirs ~f:(fun dir ->
       User_or_gen_config.load ~dir
-      *>>= fun jbuild_stanzas ->
-      if List.exists jbuild_stanzas ~f:(function
-        | `wikipub (`Upload_to _) -> true
-        | _ -> false)
-      then Dep.return []
-      else subdirs_without_upload_to_stanzas ~dir)
-    *>>| fun subdirs ->
-    dir :: subdirs
-  in
-  subdirs_without_upload_to_stanzas ~dir
-  *>>= fun dirs ->
-  Dep.List.concat_map dirs ~f:(fun dir ->
-    User_or_gen_config.load ~dir
-    *>>= Dep.List.concat_map ~f:(function
-      | `wikipub (#Jbuild_types.Wikipub_conf.sources as wikipub_sources) ->
-        Wikipub.registered_files ~dir wikipub_sources
-      | _ -> Dep.return []))
-;;
+      *>>= Dep.List.concat_map ~f:(function
+        | `wikipub (#Jbuild_types.Wikipub_conf.sources as wikipub_sources) ->
+          Wikipub.registered_files ~dir wikipub_sources
+        | _ -> Dep.return []))
+  ;;
 
-let wikipub_scheme ~dir = function
-  | #Jbuild_types.Wikipub_conf.sources as wikipub_sources ->
-    Wikipub.wikipub_sources ~dir wikipub_sources
-  | `Preview_subtree path ->
-    Wikipub.preview ~dir ~preview_root:(Path.relative ~dir (expand_vars ~dir path))
-  | `Upload_to to_wiki_space ->
-    Wikipub.upload ~dir
-      ~registered_files:(wikipub_registered_files_in_subdirs ~dir)
-      ~to_wiki_space
-;;
+  let preview =
+    let dir = Path.root_relative "jenga/start" in
+    User_or_gen_config.load ~dir
+    *>>| List.concat_map ~f:(function
+      | `wikipub (`Preview_subtree path) ->
+        [ Path.relative ~dir (expand_vars ~dir path) ]
+      | _ -> [])
+  ;;
+
+  let scheme ~dir = function
+    | #Jbuild_types.Wikipub_conf.sources as wikipub_sources ->
+      Wikipub.wikipub_sources ~dir wikipub_sources
+    | `Preview_subtree _ ->
+      Scheme.empty
+    | `Upload_to to_wiki_space ->
+      let registered_files = registered_files_in_subdirs ~dir in
+      Wikipub.upload ~dir ~preview ~registered_files ~to_wiki_space
+  ;;
+end
 
 let jbuild_rules_with_directory_context dc ~dir jbuilds =
   Scheme.all (
@@ -5435,7 +5447,7 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
       | `public_repo conf -> Scheme.rules (Public_release.rules ~artifacts:dc.artifacts ~dir conf)
       | `html conf -> Scheme.rules (Html.rules ~dir conf)
       | `enforce_style conf -> Scheme.rules (enforce_style ~dir conf)
-      | `wikipub wikipub -> wikipub_scheme ~dir wikipub
+      | `wikipub wikipub -> Wikipub.scheme ~dir wikipub
     )
   )
 
@@ -5492,7 +5504,7 @@ let rules_without_directory_context ~dir jbuilds artifacts =
 ;;
 
 (*----------------------------------------------------------------------
- artifacts.sexp
+  artifacts.sexp
   ----------------------------------------------------------------------*)
 
 module Artifacts_store_sexp : sig
@@ -5541,8 +5553,8 @@ end = struct
 end
 
 (*----------------------------------------------------------------------
- libmap.sexp
-----------------------------------------------------------------------*)
+  libmap.sexp
+  ----------------------------------------------------------------------*)
 
 module Libmap_sexp : sig
 
@@ -5623,8 +5635,8 @@ let setup_ppx_cache ~dir ~artifacts =
   )
 
 (*----------------------------------------------------------------------
- boot jenga
-----------------------------------------------------------------------*)
+  boot jenga
+  ----------------------------------------------------------------------*)
 
 module Boot = struct
 
@@ -5646,14 +5658,14 @@ module Boot = struct
     Scheme.rules [
       Rule.default ~dir
         (List.map boots ~f:(fun (sub,_) ->
-          Dep.alias (Alias.default ~dir:(Path.relative ~dir sub))))
+           Dep.alias (Alias.default ~dir:(Path.relative ~dir sub))))
     ]
 
 end
 
 (*----------------------------------------------------------------------
   autogen: determine from rule targets (& ocamllex/yacc)
-----------------------------------------------------------------------*)
+  ----------------------------------------------------------------------*)
 
 let filter_drop ~suffix xs =
   List.filter_map xs ~f:(fun x ->
@@ -5674,17 +5686,17 @@ let self_contained_projections =
     )
   in
   fun ~dir alias projections ->
-  Rule.alias (Alias.create ~dir alias) [
-    Fe.Projections_check.libs_in_projections_are_self_contained ~projections ~libs_by_dir
-    *>>| Option.iter ~f:(fun error_msg ->
-      let source = User_or_gen_config.source_file ~dir in
-      failposf ~pos:(dummy_position source) "%s" error_msg ())
-  ]
+    Rule.alias (Alias.create ~dir alias) [
+      Fe.Projections_check.libs_in_projections_are_self_contained ~projections ~libs_by_dir
+      *>>| Option.iter ~f:(fun error_msg ->
+        let source = User_or_gen_config.source_file ~dir in
+        failposf ~pos:(dummy_position source) "%s" error_msg ())
+    ]
 ;;
 
 (*----------------------------------------------------------------------
- create_directory_context, setup_main
-----------------------------------------------------------------------*)
+  create_directory_context, setup_main
+  ----------------------------------------------------------------------*)
 
 let create_directory_context ~dir jbuilds libmap artifacts k =
   (* These dependencies could/should be run in parallel *)
@@ -5718,11 +5730,11 @@ let create_directory_context ~dir jbuilds libmap artifacts k =
     let xlibnames = List.concat_map jbuilds ~f:xlibnames in
     let ocaml_plugin_libraries name =
       List.find_map jbuilds ~f:(function
-      | `embed { Embed_conf.names; libraries; _ } ->
-        if List.mem_string names name
-        then Some (Libmap.resolve_libdep_names_exn libmap libraries)
-        else None
-      | _ -> None
+        | `embed { Embed_conf.names; libraries; _ } ->
+          if List.mem_string names name
+          then Some (Libmap.resolve_libdep_names_exn libmap libraries)
+          else None
+        | _ -> None
       )
     in
     let no_utop_alias =
@@ -5746,23 +5758,23 @@ let create_directory_context ~dir jbuilds libmap artifacts k =
       List.exists jbuilds ~f:(function `enforce_style _ -> true | _ -> false)
     in
     k {DC.
-      dir;
-      link_flags;
-      merlinflags;
-      ocamlflags;
-      ocamlcflags = Top.ocamlcflags;
-      ocamloptflags = Top.ocamloptflags;
-      xlibnames;
-      ocaml_plugin_libraries;
-      no_utop_alias;
-      libmap;
-      artifacts;
-      impls;
-      intfs;
-      impl_is_buildable;
-      intf_is_buildable;
-      enforce_style;
-    }
+        dir;
+        link_flags;
+        merlinflags;
+        ocamlflags;
+        ocamlcflags = Top.ocamlcflags;
+        ocamloptflags = Top.ocamloptflags;
+        xlibnames;
+        ocaml_plugin_libraries;
+        no_utop_alias;
+        libmap;
+        artifacts;
+        impls;
+        intfs;
+        impl_is_buildable;
+        intf_is_buildable;
+        enforce_style;
+      }
   )
 
 let setup_main ~dir =
@@ -5779,8 +5791,8 @@ let setup_main ~dir =
   )
 
 (*----------------------------------------------------------------------
- env
-----------------------------------------------------------------------*)
+  env
+  ----------------------------------------------------------------------*)
 
 let tmpdir = ".jenga.tmp"
 
@@ -5887,11 +5899,11 @@ let scheme_of_generated_dirs ~dir : Env.Per_directory_information.t option =
          ; directories_generated_from = Some LL.dir }
   else if Path.(=) parent_dir ppx_cache_dir then
     Some { scheme = Scheme.dep (
-              Artifacts_store_sexp.get *>>| fun artifacts ->
-              setup_ppx_cache ~dir ~artifacts
-            )
+      Artifacts_store_sexp.get *>>| fun artifacts ->
+      setup_ppx_cache ~dir ~artifacts
+    )
          ; directories_generated_from = Some ppx_cache_dir
-         }
+    }
   else if Path.(=) dir Odoc.html_output_dir then
     Some { scheme = Scheme.rules [ Odoc.copy_css_rule ~dir ]
          ; directories_generated_from = Some Odoc.html_output_dir
@@ -5906,15 +5918,15 @@ let scheme_of_generated_dirs ~dir : Env.Per_directory_information.t option =
          }
   else if Path.is_descendant ~dir:Js_of_ocaml.dot_js_dir dir then
     Some { scheme = Scheme.dep (
-              Artifacts_store_sexp.get *>>| fun artifacts ->
-              Js_of_ocaml.setup_dot_js_dir
-                ~artifacts:artifacts
-                ~sourcemap:javascript_sourcemap
-                ~devel:for_javascript_development
-                ~ocaml_where:ocaml_where_path dir
-            )
+      Artifacts_store_sexp.get *>>| fun artifacts ->
+      Js_of_ocaml.setup_dot_js_dir
+        ~artifacts:artifacts
+        ~sourcemap:javascript_sourcemap
+        ~devel:for_javascript_development
+        ~ocaml_where:ocaml_where_path dir
+    )
          ; directories_generated_from = Some Js_of_ocaml.dot_js_dir
-         }
+    }
   else None
 
 let scheme_of_non_generated_dirs ~dir =
@@ -5924,47 +5936,47 @@ let scheme_of_non_generated_dirs ~dir =
                      ; relative ~dir "jbuild"
                      ; relative ~dir "jbuild-ignore" ]
     ; begin
-        let common_rules =
-          Scheme.all [
-            setup_manifest ~dir;
-            setup_recursive_aliases ~dir;
-            Scheme.rules (Makefile.extract ~dir);
-          ]
-        in
-        (* First, special cases for the root and directories created by the jengaroot. *)
-        if Path.(=) dir Path.the_root then
-          Scheme.all [
-            Scheme.rules (List.concat
-              [ Libmap_sexp.rules;
-                Artifacts_store_sexp.rules;
-                [ Hg_version.hg_version_out_rule;
-                  Lib_clients.Cache.rule ~libmap_dep:Libmap_sexp.get;
-                  alias_dot_filename_hack ~dir Lib_clients.Cache.file;
-                  top_api_rule;
-                  self_contained_projections ~dir
-                    "critical_path_general-is-self-contained" ["critical_path_general"];
-                  public_release_files_rule;
-                  alias_dot_directory_hack ~dir Boot.dot_boot;
-                ];
-                Findlib.global_rules;
-              ]);
-            Fe.setup_projections_targets;
-            common_rules;
-          ]
-        else
-          Scheme.dep (
-            is_ignored dir *>>| function
-            | true ->
-              (* Empty aliases that hydra can ask for .DEFAULT or .runtest even in ignored
-                 places. *)
-              empty_recursive_aliases ~dir
-            | false ->
-              Scheme.all [
-                common_rules;
-                setup_main ~dir;
-              ]
-          )
-      end
+      let common_rules =
+        Scheme.all [
+          setup_manifest ~dir;
+          setup_recursive_aliases ~dir;
+          Scheme.rules (Makefile.extract ~dir);
+        ]
+      in
+      (* First, special cases for the root and directories created by the jengaroot. *)
+      if Path.(=) dir Path.the_root then
+        Scheme.all [
+          Scheme.rules (List.concat
+                          [ Libmap_sexp.rules;
+                            Artifacts_store_sexp.rules;
+                            [ Hg_version.hg_version_out_rule;
+                              Lib_clients.Cache.rule ~libmap_dep:Libmap_sexp.get;
+                              alias_dot_filename_hack ~dir Lib_clients.Cache.file;
+                              top_api_rule;
+                              self_contained_projections ~dir
+                                "critical_path_general-is-self-contained" ["critical_path_general"];
+                              public_release_files_rule;
+                              alias_dot_directory_hack ~dir Boot.dot_boot;
+                            ];
+                            Findlib.global_rules;
+                          ]);
+          Fe.setup_projections_targets;
+          common_rules;
+        ]
+      else
+        Scheme.dep (
+          is_ignored dir *>>| function
+          | true ->
+            (* Empty aliases that hydra can ask for .DEFAULT or .runtest even in ignored
+               places. *)
+            empty_recursive_aliases ~dir
+          | false ->
+            Scheme.all [
+              common_rules;
+              setup_main ~dir;
+            ]
+        )
+    end
     ]
 ;;
 
@@ -6012,7 +6024,7 @@ let root_only_scheme =
         User_or_gen_config.load ~dir
         *>>| fun jbuild_stanzas ->
         Scheme.all (List.map jbuild_stanzas ~f:(function
-          | `wikipub wikipub_conf -> wikipub_scheme ~dir wikipub_conf
+          | `wikipub wikipub_conf -> Wikipub.scheme ~dir wikipub_conf
           | _ -> Scheme.empty)))
     ]
 
@@ -6025,32 +6037,32 @@ let scheme ~dir : Env.Per_directory_information.t =
     | Some v -> v
     | None ->
       { scheme =
-        (* Wrapper to force build of [ocaml_bin_file] at scheme setup time *)
-        Scheme.all [
-          (if Path.(=) dir Path.the_root then root_only_scheme else Scheme.empty);
-          Scheme.dep (
-            Dep.all_unit [ Dep.path (ocaml_bin_file_path ~prefix:"")
-                         ; Dep.path (ocaml_bin_file_path ~prefix:"omake-")
-                         ; if Config.public
-                           then Dep.return ()
-                           else Dep.path ocaml_version_file_output_path
-                         ]
-            *>>| fun () ->
-            scheme_of_non_generated_dirs ~dir
-          )
-        ]
+          (* Wrapper to force build of [ocaml_bin_file] at scheme setup time *)
+          Scheme.all [
+            (if Path.(=) dir Path.the_root then root_only_scheme else Scheme.empty);
+            Scheme.dep (
+              Dep.all_unit [ Dep.path (ocaml_bin_file_path ~prefix:"")
+                           ; Dep.path (ocaml_bin_file_path ~prefix:"omake-")
+                           ; if Config.public
+                             then Dep.return ()
+                             else Dep.path ocaml_version_file_output_path
+                           ]
+              *>>| fun () ->
+              scheme_of_non_generated_dirs ~dir
+            )
+          ]
       ; directories_generated_from = None
       }
 ;;
 
 let env () = Env.create
-  ~putenv:(Config.putenv ~tmpdir:(relative ~dir:Path.the_root tmpdir))
-  ~command_lookup_path:(command_lookup_path ())
-  ~build_begin
-  ~build_end
-  ~delete_eagerly: Js_stale_artifact_deletion.delete_eagerly
-  ~delete_if_depended_upon: Js_stale_artifact_deletion.delete_if_depended_upon
-  scheme
+               ~putenv:(Config.putenv ~tmpdir:(relative ~dir:Path.the_root tmpdir))
+               ~command_lookup_path:(command_lookup_path ())
+               ~build_begin
+               ~build_end
+               ~delete_eagerly: Js_stale_artifact_deletion.delete_eagerly
+               ~delete_if_depended_upon: Js_stale_artifact_deletion.delete_if_depended_upon
+               scheme
 
 let check_compiler_exists () =
   let (>>|) = Async.(>>|) in

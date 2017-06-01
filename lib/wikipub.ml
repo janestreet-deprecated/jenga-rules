@@ -98,44 +98,25 @@ let rules_for_global_metadata ~dir ~registered_files =
   ]
 ;;
 
-(* list has parent before grandparent *)
-let ancestors_with_global_metadata ~dir =
-  Sequence.unfold ~init:(Some dir) ~f:(Option.map ~f:(fun dir ->
-    if Path.(=) Path.the_root dir
-    then (dir, None)
-    else (dir, Some (Path.dirname dir))))
-  |> Sequence.to_list
-  |> Dep.List.concat_map ~f:(fun dir ->
-    Dep.glob_listing (Glob.create ~dir global_metadata_target_base)
-    *>>| function
-    | _ :: _ -> [dir]
-    | [] -> [])
-;;
-
-let preview ~dir ~preview_root =
+let rule_for_preview ~dir _preview_roots =
   let action =
-    ancestors_with_global_metadata ~dir:preview_root
-    *>>= function
-    | [] -> raise_s [%sexp ~~(preview_root : Path.t), "is not under any Upload_to"]
-    | preview_root :: _ ->
-      Dep.both
-        (* 2017-03-28: Partial upload isn't implemented yet, so we ignore the specified
-           preview paths and do a full upload whenever anything changes. *)
-        (Dep.alias (runtime_deps_of_upload ~dir:preview_root))
-        (Dep.getenv krb5ccname)
-      *>>| fun ((), krb5ccname) ->
-      let env =
-        Option.to_list (Option.map krb5ccname ~f:(fun v -> "KRB5CCNAME", v))
-      in
-      Action.process ~dir ~env
-        (Path.reach_from ~dir wikipub)
-        [ "preview"
-        ; "-mime-types"; Path.reach_from ~dir mime_types
-        ; Path.reach_from ~dir (global_metadata_target ~dir:preview_root)
-        ]
+    Dep.both
+      (* 2017-03-28: Partial upload isn't implemented yet, so we ignore the specified
+         preview paths and do a full upload whenever anything changes. *)
+      (Dep.alias (runtime_deps_of_upload ~dir))
+      (Dep.getenv krb5ccname)
+    *>>| fun ((), krb5ccname) ->
+    let env =
+      Option.to_list (Option.map krb5ccname ~f:(fun v -> "KRB5CCNAME", v))
+    in
+    Action.process ~dir ~env
+      (Path.reach_from ~dir wikipub)
+      [ "preview"
+      ; "-mime-types"; Path.reach_from ~dir mime_types
+      ; Path.reach_from ~dir (global_metadata_target ~dir)
+      ]
   in
-  [ Rule.alias (Alias.create ~dir "wikipub-check") [ Dep.action action ] ]
-  |> Scheme.rules
+  Rule.alias (Alias.create ~dir "wikipub-check") [ Dep.action action ]
 ;;
 
 let upload_script_target ~dir = relative ~dir "wikipub-update-prod-wiki.sh"
@@ -147,7 +128,8 @@ let rule_for_upload_script ~dir ~to_wiki_space:space =
        (update_wiki_args ~dir ~mode:"prod" ~space))
 ;;
 
-let upload ~dir ~registered_files ~to_wiki_space =
+let upload ~dir ~preview ~registered_files ~to_wiki_space =
   Scheme.rules
-    (rule_for_upload_script ~dir ~to_wiki_space
+    (rule_for_preview ~dir preview
+     :: rule_for_upload_script ~dir ~to_wiki_space
      :: rules_for_global_metadata ~dir ~registered_files)

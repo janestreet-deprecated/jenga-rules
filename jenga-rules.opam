@@ -6,7 +6,7 @@ bug-reports: "https://github.com/janestreet/jenga-rules/issues"
 dev-repo: "git+https://github.com/janestreet/jenga-rules.git"
 license: "Apache-2.0"
 build: [
-  ["jbuilder" "build" "--only-packages" "jenga-rules" "--root" "." "-j" jobs "@install"]
+  ["jbuilder" "build" "-p" name "-j" jobs]
 ]
 depends: [
   "jbuilder"                {build & >= "1.0+beta8"}
