@@ -8,6 +8,10 @@ val cma_suf : string
 val cmo_suf : string
 val jsdeps_suf : string
 
+(** [check_libs_exn ~dir ~required_by libs] checks that every lib in [libs] is compatible
+    with JavaScript and raises if it is not the case. *)
+val check_libs_exn : dir:Path.t -> required_by:string -> Ocaml_types.Lib_dep.t list -> unit
+
 (** [rule_for_compilation_unit] creates the rule to compile a bytecode compilation unit to
     JavaScript using the js_of_ocaml compiler.
 

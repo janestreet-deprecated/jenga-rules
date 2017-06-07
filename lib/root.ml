@@ -33,20 +33,6 @@ module List = struct
     | Some hd -> hd :: l
 end
 
-let dummy_position path =
-  { Lexing.pos_fname = Path.to_string path; pos_cnum = 0; pos_bol = 0; pos_lnum = 1 }
-;;
-let failposf : pos:Lexing.position -> ('a, unit, string, unit -> 'b) format4 -> 'a =
-  fun ~pos fmt ->
-    let {Lexing.pos_fname; pos_lnum; pos_cnum; pos_bol} = pos in
-    let col = pos_cnum - pos_bol in
-    Located_error.raisef
-      ~loc:{ source    = File (Path.relative_or_absolute ~dir:Path.the_root pos_fname)
-           ; line      = pos_lnum
-           ; start_col = col
-           ; end_col   = col
-           }
-      fmt
 let failheref : Lexing.position -> ('a, unit, string, unit -> 'b) format4 -> 'a =
   fun here fmt ->
     let pos = {here with pos_fname = "jenga/root.ml"} in
@@ -815,7 +801,6 @@ end = struct
     | `unified_tests _ -> []
     | `toplevel_expect_tests _ -> []
     | `public_repo _ -> []
-    | `html _ -> []
     | `provides _ -> []
     | `enforce_style _ -> []
     | `wikipub _ -> []
@@ -834,7 +819,6 @@ end = struct
     | `unified_tests _ -> []
     | `toplevel_expect_tests _ -> []
     | `public_repo _ -> []
-    | `html _ -> []
     | `provides l -> l
     | `enforce_style _ -> []
     | `wikipub _ -> []
@@ -3530,6 +3514,10 @@ end = struct
 
 end
 
+let check_javascript_dependencies ~dir ~required_by libs =
+  Rule.alias (Alias.default ~dir) [
+    libs *>>| Js_of_ocaml.check_libs_exn ~dir ~required_by
+  ]
 
 (*----------------------------------------------------------------------
  link_native
@@ -3704,7 +3692,9 @@ let staged_link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
         | [] -> None
         | _ :: _ -> Some (Libmap.resolve_libdep_names_exn dc.libmap toplevel)
       in
-      Js_of_ocaml.rules_for_executable
+      let check_dependencies = check_javascript_dependencies ~dir ~required_by:exe libs_maybe_forced_dep in
+      let rules =
+        Js_of_ocaml.rules_for_executable
         ~artifacts:dc.DC.artifacts
         ~sourcemap:javascript_sourcemap
         ~dir
@@ -3721,6 +3711,8 @@ let staged_link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
         ~drop_test_and_bench:(not test_or_bench)
         ~path_to_ocaml_artifact:LL.path_to_ocaml_artifact
         ~flags
+      in
+      check_dependencies :: rules
     | (`Byte | `Native), _ -> []
   in
 
@@ -4810,7 +4802,6 @@ let ocaml_libraries : [< Jbuild.t ] -> _ = function
   | `unified_tests _ -> []
   | `toplevel_expect_tests x -> Toplevel_expect_tests_interpret.libraries x
   | `public_repo _ -> []
-  | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
@@ -4833,7 +4824,6 @@ let xlibnames : Jbuild.t -> _ = function
   | `unified_tests _ -> []
   | `toplevel_expect_tests _ -> []
   | `public_repo _ -> []
-  | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
@@ -4853,7 +4843,6 @@ let extra_disabled_warnings : Jbuild.t -> _ = function
   | `unified_tests _ -> []
   | `toplevel_expect_tests _ -> []
   | `public_repo _ -> []
-  | `html _ -> []
   | `provides _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
@@ -4880,7 +4869,6 @@ let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
   | `unified_tests _
   | `toplevel_expect_tests _
   | `public_repo _
-  | `html _
   | `provides _
   | `enforce_style _
   | `wikipub _
@@ -5085,25 +5073,8 @@ let library_rules_javascript (dc : DC.t) ~dir ~js_of_ocaml ~libname =
   | None -> []
   | Some js_of_ocaml ->
     let check_dependencies =
-      Rule.alias (Alias.default ~dir) [
-        (Libmap.load_lib_deps dc.libmap (LN.suffixed ~dir libname ".libdeps")
-         *>>| fun libs ->
-         let bad_libs =
-           List.filter libs ~f:(function
-             | In_the_tree lib ->
-               not lib.supported_in_javascript
-             | From_compiler_distribution v ->
-               not (From_compiler_distribution.supported_in_javascript v)
-             | Findlib_package _ ->
-               false)
-         in
-         if not (List.is_empty bad_libs)
-         then
-           failposf ~pos:(dummy_position (User_or_gen_config.source_file ~dir))
-             !"%{LN} is supposed to work in javascript but it has \
-               problematic dependencies: %s" libname
-             (String.concat ~sep:" " (List.map bad_libs ~f:Lib_dep.to_string)) ())
-      ]
+      let deps = (Libmap.load_lib_deps dc.libmap (LN.suffixed ~dir libname ".libdeps")) in
+      check_javascript_dependencies ~dir ~required_by:(LN.to_string libname) deps
     in
     let javascript_files_dep =
       let files =
@@ -5445,7 +5416,6 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
       | `toplevel_expect_tests conf ->
         Scheme.rules (toplevel_expect_tests_rules dc ~dir conf)
       | `public_repo conf -> Scheme.rules (Public_release.rules ~artifacts:dc.artifacts ~dir conf)
-      | `html conf -> Scheme.rules (Html.rules ~dir conf)
       | `enforce_style conf -> Scheme.rules (enforce_style ~dir conf)
       | `wikipub wikipub -> Wikipub.scheme ~dir wikipub
     )
@@ -5496,7 +5466,6 @@ let rules_without_directory_context ~dir jbuilds artifacts =
        | `unified_tests _
        | `toplevel_expect_tests _
        | `public_repo _
-       | `html _
        | `provides _
        | `enforce_style _
        | `wikipub _

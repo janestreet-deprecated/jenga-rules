@@ -209,7 +209,14 @@ module Alias_basename = struct
     let t = t_of_sexp sexp in
     if String.(=) t "qtest"
     then of_sexp_error "the qtest alias is deprecated, it won't get run" sexp
-    else t
+    else
+      match String.chop_prefix t ~prefix:"." with
+      | Some without_dot ->
+        of_sexp_error
+          (sprintf "Aliases do not start with a dot (the . in .DEFAULT is part of \
+                    the command line syntax), you probably meant %s instead?" without_dot)
+          sexp
+      | None -> t
 end
 
 module Artifact_name = Ocaml_types.Artifact_name
@@ -615,7 +622,7 @@ module Unified_tests = struct
      your tests. [setup_script] will be sourced before running the tests. The tests must
      be named test-XXX.t  *)
   type t =
-    { target : string sexp_option
+    { target : Alias_basename.t sexp_option
     ; deps : Dep_conf.t list
     ; timeout : Time.Span.t [@default default_timeout]
     ; setup_script : String_with_vars.t sexp_option
@@ -673,13 +680,6 @@ module Public_repo = struct
     ; hooks               : String_with_vars.t T.Package.Hooks.t
                               [@default T.Package.Hooks.none]
     }
-  [@@deriving of_sexp]
-end
-
-module Html_conf = struct
-  type t =
-    { orgs : string list;
-      css : string sexp_option; }
   [@@deriving of_sexp]
 end
 
@@ -764,7 +764,6 @@ module Jbuild = struct
   | `unified_tests of Unified_tests.t
   | `toplevel_expect_tests of Toplevel_expect_tests.t
   | `public_repo of Public_repo.t
-  | `html of Html_conf.t
   | `provides of Provides_conf.t sexp_list
 
   (* [enforce_style] opts in the [jbuild]'s directory to the requirement that (some of)

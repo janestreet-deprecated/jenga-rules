@@ -104,6 +104,23 @@ let from_external_archives ~ocaml_where paths =
     Path.relative ~dir (base ^ ".js")
   )
 
+let check_libs_exn ~dir ~required_by libs =
+  let bad_libs =
+    List.filter libs ~f:(function
+      | Lib_dep.In_the_tree lib ->
+        not lib.supported_in_javascript
+      | From_compiler_distribution v ->
+        not (From_compiler_distribution.supported_in_javascript v)
+      | Findlib_package _ ->
+        false)
+  in
+  if not (List.is_empty bad_libs)
+  then
+    failposf ~pos:(dummy_position (relative ~dir "jbuild"))
+      !"%s is supposed to work in javascript but it has \
+        problematic dependencies: %s" required_by
+      (String.concat ~sep:" " (List.map bad_libs ~f:Lib_dep.to_string)) ()
+
 let source_map_path p =
   Path.relative ~dir:(Path.dirname p) (with_sourcemap_suf (Path.basename p))
 
@@ -293,6 +310,7 @@ let all_deps_for_libs ~artifacts ~path_to_ocaml_artifact (libs : Lib_dep.t list)
       runtime_files_for_lib_in_compiler_distribution ~artifacts l
       |> Dep.all
     | Findlib_package _ -> Dep.return []
+    | In_the_tree {supported_in_javascript = false; _} -> Dep.return []
     | In_the_tree lib ->
       let path =
         path_to_ocaml_artifact ~lib_in_the_tree:lib.name ~suf:jsdeps_suf
@@ -327,6 +345,9 @@ let rules_for_executable
   let target_js = suffixed ~dir exe exe_suf in
   let export_file = Option.some_if with_toplevel (suffixed ~dir exe export_suf) in
   let cmis_file = suffixed ~dir exe ".cmis.js" in
+  let libs_dep =
+    libs_dep *>>| fun libs -> check_libs_exn ~dir ~required_by:exe libs; libs
+  in
   let findlib_flags_query =
     Findlib.javascript_linker_option (module Mode) ~dir ~exe libs_dep
   in

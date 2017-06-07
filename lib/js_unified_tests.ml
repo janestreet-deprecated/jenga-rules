@@ -18,6 +18,20 @@ let ocaml_style = Var.peek_register_bool ocaml_style_varname
 let ascii_diffs_varname = "UNIFIED_TESTS_ASCII_DIFFS"
 let ascii_diffs = Var.peek_register_bool ascii_diffs_varname ~default:false
 
+let create_script ~setup_script ~prog ~args = sprintf !"
+export %s=%{Bool}
+export %s=%{Bool}
+
+%s
+%{concat_quoted} \"$@\""
+              ocaml_style_varname ocaml_style
+              ascii_diffs_varname ascii_diffs
+              (match setup_script with
+               | None -> "# no specified file to source"
+               | Some setup_script -> sprintf !"source %{quote}" setup_script)
+              (prog :: args)
+;;
+
 let rules ~dir
       { target; deps; timeout; setup_script; sandbox; uses_catalog; runtime_deps_alias } =
   let script_basename = "run-unified-tests" in
@@ -34,10 +48,10 @@ let rules ~dir
         ["--timeout"; Int.to_string timeout_in_sec]
       in
       Catalog_sandbox.wrap uses_catalog ~can_assume_env_is_setup:false
-        { prog; dir; args; }
+        (Action.bash_process ~dir ~cmd:(create_script ~setup_script ~prog ~args))
     in
     assert (Path.(=) dir dir');
-    sprintf !{|%{concat_quoted} "$@"|} (prog :: args)
+    sprintf !{|exec %{concat_quoted} -- "$@"|} (prog :: args)
   in
   let rule_to_create_script =
     Rule.create ~targets:[script]
@@ -45,22 +59,7 @@ let rules ~dir
          Action.save
            ~chmod_x:()
            ~target:script
-           (sprintf !"\
-#!/bin/bash
-set -e -u -o pipefail
-
-export %s=%{Bool}
-export %s=%{Bool}
-
-%s
-%s
-"
-              ocaml_style_varname ocaml_style
-              ascii_diffs_varname ascii_diffs
-              (match setup_script with
-               | None -> "# no specified file to source"
-               | Some setup_script -> sprintf !"source %{quote}" setup_script)
-              run_the_tests)))
+           (sprintf !"#!/bin/bash\n%s\n" run_the_tests)))
   in
   let create_script_by_default =
     Rule.alias (Alias.create ~dir "DEFAULT") [ Dep.path script ]

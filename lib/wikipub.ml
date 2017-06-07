@@ -5,10 +5,12 @@ open! Import
    valid Kerberos credentials out to a running jenga process. *)
 let krb5ccname = Var.register "KRB5CCNAME"
 
-let wikipub    = Path.absolute "/j/office/app/wikipub/bin/2017-05-12_3b1ac2b3307b"
+let wikipub    = Path.absolute "/j/office/app/wikipub/bin/2017-06-01_44000486838d"
 (* uncomment this for testing. *)
 (* let () = ignore wikipub
  * let wikipub    = root_relative "app/wikipub/bin/main.exe" *)
+let pandoc_query =
+  Path.absolute "/j/office/app/pandoc/prod/pandoc-query/2017-05-22_4cac8ef0ca35/pandoc-query"
 let template   = root_relative "app/wikipub/data/template.html"
 let mime_types = root_relative ".wikipub-mime-types.sexp"
 
@@ -36,29 +38,51 @@ let replace_extension_if_any path ~suf =
   relative ~dir:(Path.dirname path) (without_ext ^ suf)
 ;;
 
-let standard_formats_glob ~dir = Glob.create ~dir "*.{org,md,mkd}"
+let standard_formats_glob_string = "*.{org,md,mkd}"
+let standard_formats_glob ~dir = Glob.create ~dir standard_formats_glob_string
 
 let registered_files ~dir = function
   | `Standard_formats -> Dep.glob_listing (standard_formats_glob ~dir)
   | `Files basenames -> Dep.return (List.map basenames ~f:(Path.relative ~dir))
 ;;
 
+let list_images ~dir file =
+  let format =
+    match snd (Filename.split_extension (Path.basename file)) with
+    | Some "mkd" | Some "md" -> "--markdown"
+    | Some "org" -> "--org"
+    | None | Some _ ->
+      raise_s [%sexp ("Wikipub only supports files matching "
+                      ^ standard_formats_glob_string : string), ~~(file : Path.t)]
+  in
+  Dep.action_stdout (
+    Dep.path file
+    *>>| fun () ->
+    Action.process ~dir ~env:[ "LC_ALL", "en_US.UTF-8" ]
+      (Path.reach_from ~dir pandoc_query)
+      [ "list-images"; format; Path.reach_from ~dir file ]
+  ) *>>| fun images ->
+  List.map (String.split_lines images) ~f:(Path.relative ~dir)
+;;
+
 let wikipub_sources ~dir wikipub_sources =
   let rule_for_individual_file file =
     let dir = Path.dirname file in
-      Rule.create
-        ~targets:[ replace_extension_if_any file ~suf:confluence_xml_suffix
-                 ; replace_extension_if_any file ~suf:confluence_metadata_suffix
-                 ]
-        (Dep.all_unit [ Dep.path file
-                      ; Dep.path wikipub
-                      ; Dep.path template
-                      ]
-         *>>| fun () ->
-         Action.process ~dir (Path.reach_from ~dir wikipub)
-           [ "compile-page"; Path.reach_from ~dir file
-           ; "-template"; reach_from ~dir template
-           ])
+    Rule.create
+      ~targets:[ replace_extension_if_any file ~suf:confluence_xml_suffix
+               ; replace_extension_if_any file ~suf:confluence_metadata_suffix
+               ]
+      (Dep.all_unit
+         [ Dep.path file
+         ; Dep.path wikipub
+         ; Dep.path template
+         ; (list_images ~dir file *>>= Fn.compose Dep.all_unit (List.map ~f:Dep.path))
+         ]
+       *>>| fun () ->
+       Action.process ~dir (Path.reach_from ~dir wikipub)
+         [ "compile-page"; Path.reach_from ~dir file
+         ; "-template"; reach_from ~dir template
+         ])
   in
   match wikipub_sources with
   | `Files basenames ->
