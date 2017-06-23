@@ -35,7 +35,7 @@ end
 
 let failheref : Lexing.position -> ('a, unit, string, unit -> 'b) format4 -> 'a =
   fun here fmt ->
-    let pos = {here with pos_fname = "jenga/root.ml"} in
+    let pos = {here with pos_fname = "app/jenga-rules/src/root.ml"} in
     failposf ~pos fmt
 
 let path_remove_dups_and_sort xs =
@@ -94,6 +94,8 @@ module Alias = struct
   let c ~dir = Alias.create ~dir "c"
   let default ~dir = Alias.create ~dir "DEFAULT"
   let runtest ~dir = Alias.create ~dir "runtest"
+  let run_x_library_inlining_sensitive_tests ~dir =
+    Alias.create ~dir "run-x-library-inlining-sensitive-tests"
   let pp ~dir = Alias.create ~dir "pp"
   let libdeps ~dir = Alias.create ~dir "libdeps"
   let merlin ~dir = Alias.create ~dir "merlin"
@@ -3237,7 +3239,7 @@ module Hg_version = struct
       end
       *>>| Action.write_string ~target:hg_version_out)
 
-  let path_of_here = root_relative "jenga/root.ml"
+  let path_of_here = root_relative "app/jenga-rules/src/root.ml"
   let () =
     if not Config.public then
       assert (String.is_suffix [%here].pos_fname
@@ -4451,6 +4453,7 @@ let inline_tests_args ~runtime_environment ~libname ~flags : string list =
   [ "inline-test-runner"; LN.to_string libname ]
   @ arch_arg
   @ other_drop_arg
+  @ [ "-drop-tag"; "x-library-inlining-sensitive" ]
   @ flags
 
 let inline_tests_script_rule
@@ -4600,6 +4603,59 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
   match exe_artifact_in_std_aliases ~only_shared_object with
   | _, `Cmx -> []
   | exe_suf, (`So | `Exe) ->
+    let alias_to_automatically_run_tests
+          alias
+          ~extra_flags
+          ~(should : Inline_tests.what_tests_to_build_or_run)
+      =
+      if (should.run_native || should.run_javascript)
+      && not (Compiler_selection.m32 && only_shared_object)
+      then
+        [ Rule.alias alias [
+            sources_with_tests ~dir *>>= function
+            | None -> return ()
+            | Some { inline_test = (); expect_tests = sources } ->
+              let sources = lazy (String.Set.of_list sources) in
+              let run ~exe_deps ~for_javascript exe =
+                Dep.action_stdout
+                  (run_inline_action ~dir ~exe_deps exe
+                     ~user_deps:[]
+                     ~runtime_deps:[]
+                     ~flags:(["-list-partitions"] @ extra_flags)
+                     ~uses_catalog:user_config.uses_catalog
+                     ~sandbox:Sandbox.default
+                     ~timeout:None
+                     ~for_javascript)
+                *>>= fun output ->
+                let partitions = String.split_lines output in
+                Dep.all_unit (List.map partitions ~f:(fun p ->
+                  Dep.action
+                    (run_inline_action ~dir ~exe_deps exe
+                       ~user_deps:user_config.deps
+                       ~timeout:user_config.timeout
+                       ~runtime_deps:
+                         (let source = p ^ ".ml" in
+                          if Set.mem (force sources) source
+                          then [ Dep.path (relative ~dir source) ]
+                          else [])
+                       ~flags:(["-partition"; p] @ extra_flags)
+                       ~uses_catalog:user_config.uses_catalog
+                       ~sandbox
+                       ~for_javascript
+                    )))
+              in
+              Dep.all_unit
+                [ if should.run_native
+                  then run ~exe_deps:[exe ^ exe_suf] ~for_javascript:false exe
+                  else return ()
+                ; if should.run_javascript
+                  then run ~exe_deps:[exe ^ Js_of_ocaml.exe_suf] ~for_javascript:true exe_js
+                  else return ()
+                ]
+          ]]
+      else
+        []
+    in
     let should =
       Inline_tests.what_tests_to_build_or_run user_config
         ~has_js_of_ocaml:(Option.is_some js_of_ocaml)
@@ -4680,58 +4736,17 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
                     | Some names -> Dep.all_unit names
                   ] ]
       )
-    ; if (should.run_native || should.run_javascript)
-      && not (Compiler_selection.m32 && only_shared_object)
-      then
-        let alias =
+    ; ( let alias =
           match user_config.alias with
           | None -> Alias.runtest ~dir
           | Some name -> Alias.create ~dir name
         in
-        [ Rule.alias alias [
-            sources_with_tests ~dir *>>= function
-            | None -> return ()
-            | Some { inline_test = (); expect_tests = sources } ->
-              let sources = lazy (String.Set.of_list sources) in
-              let run ~exe_deps ~for_javascript exe =
-                Dep.action_stdout
-                  (run_inline_action ~dir ~exe_deps exe
-                     ~user_deps:[]
-                     ~runtime_deps:[]
-                     ~flags:["-list-partitions"]
-                     ~uses_catalog:user_config.uses_catalog
-                     ~sandbox:Sandbox.default
-                     ~timeout:None
-                     ~for_javascript)
-                *>>= fun output ->
-                let partitions = String.split_lines output in
-                Dep.all_unit (List.map partitions ~f:(fun p ->
-                  Dep.action
-                    (run_inline_action ~dir ~exe_deps exe
-                       ~user_deps:user_config.deps
-                       ~timeout:user_config.timeout
-                       ~runtime_deps:
-                         (let source = p ^ ".ml" in
-                          if Set.mem (force sources) source
-                          then [ Dep.path (relative ~dir source) ]
-                          else [])
-                       ~flags:["-partition"; p]
-                       ~uses_catalog:user_config.uses_catalog
-                       ~sandbox
-                       ~for_javascript
-                    )))
-              in
-              Dep.all_unit
-                [ if should.run_native
-                  then run ~exe_deps:[exe ^ exe_suf] ~for_javascript:false exe
-                  else return ()
-                ; if should.run_javascript
-                  then run ~exe_deps:[exe ^ Js_of_ocaml.exe_suf] ~for_javascript:true exe_js
-                  else return ()
-                ]
-          ]]
-      else
-        [];
+        alias_to_automatically_run_tests alias ~should ~extra_flags:[]
+      )
+    ; alias_to_automatically_run_tests
+        (Alias.run_x_library_inlining_sensitive_tests ~dir)
+        ~should:{ should with run_javascript = false }
+        ~extra_flags:["-require-tag"; "x-library-inlining-sensitive"]
     ]
 
 let bench_runner_cmx =
@@ -5820,6 +5835,7 @@ let recursive_alias_list = [
   Alias.merlin;
   Alias.pp;
   Alias.runtest;
+  Alias.run_x_library_inlining_sensitive_tests;
   Alias.runtime_deps_of_tests;
   Alias.save_benchmarks;
   Alias.unused_libs;

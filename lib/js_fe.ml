@@ -316,7 +316,7 @@ module Make(Hg : sig
       *>>= function
       | (_, (_, (Error e))) -> return (Some (Error.to_string_hum e))
       | (tracked_files, (libs_by_dir, Ok files_in_projections)) ->
-        let dir_of_jenga_sources = Path.root_relative "jenga" in
+        let dir_of_jenga_sources = Path.root_relative "app/jenga-rules/src" in
         let dirs =
           List.dedup ~compare:Path.compare
             (List.filter_map files_in_projections ~f:(fun path ->
