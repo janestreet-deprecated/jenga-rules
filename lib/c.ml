@@ -85,8 +85,7 @@ open Import
 
 module Flavor = struct
   module T = struct
-    type t = [`C | `Cxx] [@@deriving sexp, compare]
-    let hash = Hashtbl.hash
+    type t = [`C | `Cxx] [@@deriving sexp, compare, hash]
   end
 
   include T

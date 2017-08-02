@@ -5797,23 +5797,18 @@ let build_end () =
   Async.Deferred.unit
 
 let command_lookup_path () =
-  let script_dir sub_dir =
-    relative ~dir:Config.script_dir sub_dir
-    |> Path.to_absolute_string
-  in
-  let dirs =
-    [ (* Intercept calls made to "ranlib" from the ocaml compiler, and fix them to be
-         deterministic by adding a 'D' modifier.
-         - i.e. calling "ar -Ds" instead of "ar -s"
-         We also now intercept calls to ar (from the ocaml compiler).
-         And convert: "ar rc" -> "ar Drc" *)
-      script_dir "deterministic-ranlib"
-    ; script_dir "cpp_quietly"
-    ]
-  in
+  (* The directories we put end here take priority over the rest of the PATH. Any file we
+     put in the PATH this way is not tracked by the jenga dependencies, so we should be
+     careful about not breaking the incremental build when changing these programs.
+     We intercept calls made to "ranlib" and "ar", and fix them to be deterministic by
+     adding the D modifier. The ocaml compiler at least calls these, maybe other tools
+     also do.
+     We also silence some cpp warnings.
+     Finally, we allow commands to call [jenga root] by defining jenga.  *)
+  let dir = Path.to_absolute_string (root_relative "app/jenga-rules/PATH") in
   match Config.command_lookup_path with
-  | `Replace -> `Replace dirs
-  | `Extend  -> `Extend  dirs
+  | `Replace -> `Replace [dir]
+  | `Extend  -> `Extend  [dir]
 
 let rec under segment dir =
   (* Return true if [segment] is found anywhere in the path [dir].

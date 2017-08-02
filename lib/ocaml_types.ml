@@ -18,7 +18,7 @@ end = struct
   let prefix_sep = "__"
 
   module T = struct
-    type t = string [@@deriving compare, bin_io]
+    type t = string [@@deriving compare, bin_io, hash]
 
     let of_string_opt s =
       if String.is_substring s ~substring:prefix_sep
@@ -36,7 +36,6 @@ end = struct
           prefix_sep s ()
 
     let to_string = Fn.id
-    let hash = String.hash
     let module_name = "Jenga_conf.Ocaml_types"
   end
   include T

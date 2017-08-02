@@ -318,7 +318,7 @@ module Make(Hg : sig
       | (tracked_files, (libs_by_dir, Ok files_in_projections)) ->
         let dir_of_jenga_sources = Path.root_relative "app/jenga-rules/src" in
         let dirs =
-          List.dedup ~compare:Path.compare
+          List.dedup_and_sort ~compare:Path.compare
             (List.filter_map files_in_projections ~f:(fun path ->
                let dir = Path.dirname path in
                if Path.equal dir dir_of_jenga_sources
