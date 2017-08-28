@@ -247,17 +247,12 @@ let alias_dot_filename_hack ~dir dot_name =
   let name = String.chop_prefix_exn dot_name ~prefix:"." in
   Rule.alias (Alias.create ~dir name) [Dep.path (relative ~dir dot_name)]
 
-let dummy_position path =
-  { Lexing.pos_fname = Path.to_string path; pos_cnum = 0; pos_bol = 0; pos_lnum = 1 }
+let dummy_position path : Located_error.Loc.t =
+  { source    = File path
+  ; line      = 1
+  ; start_col = 0
+  ; end_col   = 0
+  }
 ;;
-let failposf : pos:Lexing.position -> ('a, unit, string, unit -> 'b) format4 -> 'a =
-  fun ~pos fmt ->
-    let {Lexing.pos_fname; pos_lnum; pos_cnum; pos_bol} = pos in
-    let col = pos_cnum - pos_bol in
-    Located_error.raisef
-      ~loc:{ source    = File (Path.relative_or_absolute ~dir:Path.the_root pos_fname)
-           ; line      = pos_lnum
-           ; start_col = col
-           ; end_col   = col
-           }
-      fmt
+
+let failposf ~pos fmt = Located_error.raisef ~loc:pos fmt

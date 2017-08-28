@@ -175,7 +175,9 @@ module Preprocess_specs = struct
 
   let t_of_sexp (sexp : Sexp.t) =
     match sexp with
-    | List (Atom "per_file" :: l) -> List.map l ~f:Preprocess_spec.t_of_sexp
+    | List (Atom "per_module" :: l) -> List.map l ~f:Preprocess_spec.t_of_sexp
+    | List (Atom "per_file" :: _) ->
+      of_sexp_error "'per_file' was renamed to 'per_module'" sexp
     | sexp ->
       match Preprocess_kind.t_of_sexp sexp with
       | kind -> [(kind, Ordered_set_lang.standard)]
@@ -187,7 +189,7 @@ module Preprocess_specs = struct
 This is using the old syntax for (preprocess ...).
 If you have multiple subsets in your 'preprocess' field, write:
 
-  (preprocess (per_file (<kind1> <names-spec>) (<kind2> <names-spec>) ...))
+  (preprocess (per_module (<kind1> <names-spec>) (<kind2> <names-spec>) ...))
 
 Otherwise simply write (preprocess <kind>) which means to use <kind> for all modules."
             sexp
@@ -431,7 +433,8 @@ module Library_conf = struct
   module External = struct
     (* Description of external libraries imported into Jane *)
     type t =
-      { (* [true] if we are repackaging the library internally. i.e. if externally the
+      {
+        (* [true] if we are repackaging the library internally. i.e. if externally the
            library exports several toplevel modules and internally we are repackaging it
            under a single module.
 

@@ -538,6 +538,7 @@ end = struct
           :: Dep.path (Metadata.path ~package:pkg_name)
           :: Dep.path forbidden_regexps
           :: Dep.path Public_libmap.public_libmap
+          :: Dep.path (root_relative ".fe/obligations-global.sexp")
           :: (Dep.contents files_to_copy
               *>>= fun s ->
               Dep.all_unit (List.map (String.split_lines s) ~f:(fun s ->

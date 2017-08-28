@@ -27,7 +27,7 @@ let delete_if_depended_upon =
         (Dep.source_if_it_exists hgignore
          *>>| fun () ->
          (* silence hg's garbage output about locks *)
-         Action.process ~ignore_stderr:true ~dir "hg" [ "debugignore" ])
+         Action.process ~sandbox:Sandbox.none ~ignore_stderr:true ~dir "hg" [ "debugignore" ])
       *>>| fun stdout ->
       let stdout = Option.value ~default:stdout (String.chop_suffix stdout ~suffix:"\n") in
       (* avoid considering everything is ignored if the hgignore is empty *)

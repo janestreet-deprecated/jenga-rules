@@ -5,7 +5,11 @@ open! Import
     and not containing "__" anywhere in their name.
     [of_string] conversion takes care of uncapitalizing the first letter so it can
     be used to convert ocaml unit names to library names
-*)
+
+    Projects developed externally tend to put not wrap libraries like we do. We build all
+    libraries wrapped regardless (to still guarantee unicity of cmis for instance), but
+    people can name libraries with an _flat suffix to ask that a library be
+    automatically opened when used. *)
 module Libname : sig
   include Identifiable.S
   val of_string_opt : string -> t option
@@ -13,6 +17,7 @@ module Libname : sig
   val to_module : t -> string
   val prefix : t -> string
   val prefix_sep : string
+  val is_flat : t -> bool
 end = struct
   (* double underscore has low probability of colliding with a library name *)
   let prefix_sep = "__"
@@ -44,6 +49,8 @@ end = struct
   let suffixed = suffixed
   let to_module = String.capitalize
   let prefix t = t ^ prefix_sep
+  let flat_suffix = "_flat"
+  let is_flat t = String.is_suffix t ~suffix:flat_suffix
 end
 module LN = Libname
 

@@ -62,7 +62,7 @@ val rules_for_executable
   -> js_files:Path.t List.t
   -> libs_dep:Ocaml_types.Lib_dep.t List.t Dep.t
   -> compute_objs:(Path.t * Ocaml_types.PN.t) List.t Dep.t
-  -> toplevel:Ocaml_types.Lib_dep.t List.t option
+  -> toplevel:(Ocaml_types.Lib_dep.t List.t * unit Dep.t list) option
   -> hg_version:Path.t option
   -> build_info:Path.t option
   -> separate_compilation:bool

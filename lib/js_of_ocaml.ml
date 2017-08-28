@@ -266,7 +266,7 @@ let link_js_files ~artifacts ~sourcemap ~dir ~files ~target =
     (reach_from ~dir target)
     flags
 
-let rules_for_toplevel_export ~dir ~ocaml_where ~artifacts ~archives_to_export ~export_file ~cmis_file =
+let rules_for_toplevel_export ~dir ~ocaml_where ~artifacts ~archives_to_export ~export_file ~cmis_file ~cmi_deps =
   [ Rule.create ~targets:[cmis_file] (
       archives_to_export *>>= fun archives ->
       let toplevel_cmis =
@@ -279,7 +279,7 @@ let rules_for_toplevel_export ~dir ~ocaml_where ~artifacts ~archives_to_export ~
       Dep.both
         (runtime_files artifacts)
         (Named_artifact.path artifacts js_of_ocaml_mkcmis) *>>= fun (runtime_files,mkcmis) ->
-      Dep.all_unit (List.map ~f:Dep.path (mkcmis :: runtime_files @ archives)) *>>| fun () ->
+      Dep.all_unit (List.map ~f:Dep.path (mkcmis :: runtime_files @ archives) @ cmi_deps) *>>| fun () ->
       Action.process ~dir (reach_from ~dir mkcmis)
         (List.concat [
            ["--no-runtime"];
@@ -293,7 +293,7 @@ let rules_for_toplevel_export ~dir ~ocaml_where ~artifacts ~archives_to_export ~
          archives_to_export
          (Named_artifact.path artifacts js_of_ocaml_listunits)
        *>>= fun (archives, listunits) ->
-       Dep.all_unit (List.map ~f:Dep.path (listunits :: archives)) *>>| fun () ->
+       Dep.all_unit (List.map ~f:Dep.path (listunits :: archives) @ cmi_deps) *>>| fun () ->
        Action.process ~dir (reach_from ~dir listunits)
          (List.map archives ~f:(reach_from ~dir)
           @ ["-o"; (reach_from ~dir export_file)]))
@@ -450,7 +450,7 @@ let rules_for_executable
     match toplevel,export_file with
     | None, None -> []
     | None, _ | _, None -> assert false
-    | Some libdeps, Some export_file ->
+    | Some (libdeps, cmi_deps), Some export_file ->
       begin
         let archives_from_findlib =
           let findlib_archives =
@@ -474,7 +474,7 @@ let rules_for_executable
         in
         rules_for_toplevel_export
           ~dir ~ocaml_where:ocaml_where ~artifacts
-          ~archives_to_export ~export_file ~cmis_file
+          ~archives_to_export ~export_file ~cmis_file ~cmi_deps
       end
   in
   extra_rules_for_toplevel @
