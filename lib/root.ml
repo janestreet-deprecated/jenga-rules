@@ -1841,18 +1841,29 @@ let wrap_timeout timeout (process : Action.process) =
     ; args = Int.to_string timeout_in_sec :: process.prog :: process.args
     }
 
-let expanded_to_action ~sandbox ~timeout ~uses_catalog ~dir (t : string User_action.t) =
-  let sandbox = Some sandbox in
-  match t with
-  | Shexp shexp -> User_action.Mini_shexp.to_action ?sandbox ~dir shexp
-  | Bash cmd ->
-    let process =
-      (* timeout should be the outermost wrapper, in case catalog gets stuck *)
-      Action.bash_process ~dir ~cmd
-      |> Catalog_sandbox.wrap uses_catalog ~can_assume_env_is_setup:true
-      |> wrap_timeout timeout
-    in
-    Action.process' ?sandbox process
+let wrap_partition partition (process : Action.process) =
+  match partition with
+  | None -> process
+  | Some `List -> { process with args = process.args @ [ "-list-partitions" ] }
+  | Some (`Run p) -> { process with args = process.args @ [ "-partition"; p ] }
+
+let expanded_to_action ~sandbox ~timeout ~uses_catalog ~dir ~partition (t : string User_action.t) =
+  let env, process =
+    match t with
+    | Shexp shexp ->
+      User_action.Mini_shexp.to_process ~dir shexp
+    | Bash cmd ->
+      assert (Option.is_none partition);
+      [], Action.bash_process ~dir ~cmd
+  in
+  let process =
+    (* timeout should be the outermost wrapper, in case catalog gets stuck *)
+    process
+    |> wrap_partition partition
+    |> Catalog_sandbox.wrap uses_catalog ~can_assume_env_is_setup:true
+    |> wrap_timeout timeout
+  in
+  Action.process' ~sandbox ~env process
 ;;
 
 let rule_conf_to_rule ~dir artifacts conf =
@@ -1860,7 +1871,7 @@ let rule_conf_to_rule ~dir artifacts conf =
   let sandbox = if sandbox_rules then sandbox else Sandbox.default in
   let action =
     User_action_interpret.expand ~dir ~artifacts ~targets ~deps action
-    *>>| expanded_to_action ~sandbox ~dir ~uses_catalog ~timeout
+    *>>| expanded_to_action ~sandbox ~dir ~uses_catalog ~timeout ~partition:None
   in
   Rule.create ~targets:(List.map targets ~f:(relative ~dir)) (
     Dep.both
@@ -1871,24 +1882,37 @@ let rule_conf_to_rule ~dir artifacts conf =
   )
 
 let alias_conf_to_rule ~dir ~artifacts conf =
-  let { Alias_conf. name; deps; action; sandbox; uses_catalog; timeout } = conf in
-  let sandbox = if sandbox_rules then sandbox else Sandbox.default in
-  let action =
-    Option.map action
-      ~f:(fun a ->
-        User_action_interpret.expand ~dir ~artifacts ~targets:[] ~deps a
-        *>>| expanded_to_action ~sandbox ~timeout ~uses_catalog ~dir)
-  in
-  let deps = Dep_conf_interpret.list_to_depends ~dir deps in
-  let deps =
+  let { name; deps; action; sandbox; uses_catalog; timeout; partition } : Alias_conf.t = conf in
+  let interpreted_deps = Dep_conf_interpret.list_to_depends ~dir deps in
+  let alias_rhs =
     match action with
-    | None -> deps
-    | Some action ->
-      [Dep.action (Dep.both (Dep.all_unit (Catalog_sandbox.deps uses_catalog
-                                           @ (Dep.path time_limit :: deps))) action
-                   *>>| fun ((), action) -> action)]
+    | None -> interpreted_deps
+    | Some a ->
+      let sandbox = if sandbox_rules then sandbox else Sandbox.default in
+      let action ~partition =
+        Dep.both
+          (Dep.all_unit (Catalog_sandbox.deps uses_catalog
+                         @ (Dep.path time_limit :: interpreted_deps)))
+          (User_action_interpret.expand ~dir ~artifacts ~targets:[] ~deps a)
+        *>>| fun ((), expanded) ->
+        expanded_to_action ~sandbox ~timeout ~uses_catalog ~dir ~partition expanded
+      in
+      let dep =
+        if partition
+        then
+          Dep.action_stdout
+            (action ~partition:(Some `List))
+          *>>= fun output ->
+          let partitions = String.split_lines output in
+          Dep.all_unit (List.map partitions ~f:(fun p ->
+            Dep.action (action ~partition:(Some (`Run p)))))
+        else
+          Dep.action (action ~partition:None)
+      in
+      [ dep ]
   in
-  Rule.alias (Alias.create ~dir name) deps
+  Rule.alias (Alias.create ~dir name) alias_rhs
+;;
 
 module Lib_clients = struct
 
@@ -5258,7 +5282,8 @@ let library_rules dc ~dir library_conf =
          The stubs need to be linked in statically into the cmxs as usual, but although
          the compiler does pass them to the C compiler, they can get dropped, presumably
          because the linker doesn't see any use of some symbols in the current library. We
-         pass -whole-archive to ld to turn off this dead code elimination. *)
+         pass -whole-archive to ld to turn off this dead code elimination.
+      *)
       Action.process ~dir
         ocamlopt_path
         (List.concat
@@ -5266,6 +5291,7 @@ let library_rules dc ~dir library_conf =
              ; "-I"; "."
              ; "-ccopt"; quote "-Wl,-whole-archive"
              ]
+           ; dc.link_flags
            ; ccopts (List.map stub_names ~f:(sprintf "-l%s_stubs"))
            ; [ "-ccopt"; quote "-Wl,-no-whole-archive"
              ; LN.to_string libname ^ ".cmxa"
@@ -5857,7 +5883,7 @@ let command_lookup_path () =
      also do.
      We also silence some cpp warnings.
      Finally, we allow commands to call [jenga root] by defining jenga.  *)
-  let dir = Path.to_absolute_string (root_relative "app/jenga-rules/PATH") in
+  let dir = Path.to_absolute_string Config.priority_path_dir in
   match Config.command_lookup_path with
   | `Replace -> `Replace [dir]
   | `Extend  -> `Extend  [dir]

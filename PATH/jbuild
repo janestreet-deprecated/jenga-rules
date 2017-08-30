@@ -1,0 +1,11 @@
+(install
+ ((section libexec)
+  (files (
+    (cpp as scripts/cpp)
+    (ar as scripts/ar)
+    (ranlib as scripts/ranlib)
+    (jenga as scripts/jenga)
+   ))))
+
+
+(jbuild_version 1)

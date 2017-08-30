@@ -15,6 +15,8 @@ let script_dir =
          | None -> Sys.getcwd ()
          | Some path -> path ^/ "scripts"))
 
+let priority_path_dir = script_dir
+
 let public = true
 
 let command_lookup_path = `Extend

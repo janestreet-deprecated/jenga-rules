@@ -350,6 +350,11 @@ end = struct
             ; Rule.alias (Alias.create ~dir "binaries")
                 (List.map opam_switches ~f:(fun sw ->
                    Dep.alias (Alias.create ~dir ("binaries." ^ sw))))
+            ; Rule.alias (Alias.create ~dir "binaries-no-osx")
+                (List.filter opam_switches
+                   ~f:(fun sw -> not (String.is_prefix sw ~prefix:"osx"))
+                 |> List.map ~f:(fun sw ->
+                   Dep.alias (Alias.create ~dir ("binaries." ^ sw))))
             ]
           ; List.map opam_switches ~f:(fun sw ->
               Rule.alias (Alias.create ~dir ("binaries." ^ sw))

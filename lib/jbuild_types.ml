@@ -79,14 +79,13 @@ module User_action = struct
       | Chdir (fn, t) -> fold t ~init:(f acc fn) ~f
       | Setenv (var, value, t) -> fold t ~init:(f (f acc var) value) ~f
 
-    let to_action ?sandbox ~dir (t : string t) =
+    let to_process ~dir (t : string t) =
       let rec loop env dir = function
         | Chdir (fn, t) ->
           loop env (Path.relative ~dir fn) t
         | Setenv (var, value, t) ->
           loop ((var, value) :: env) dir t
-        | Run (prog, args) ->
-          Action.process ?sandbox ~env ~dir prog args
+        | Run (prog, args) -> env, { Action. prog; args; dir }
       in
       loop [] dir t
   end
@@ -407,7 +406,19 @@ module Alias_conf = struct
     sandbox : Sandbox_conf.t [@default Sandbox_conf.hardlink];
     uses_catalog : Uses_catalog.t [@default No];
     timeout : Time.Span.t option [@default Some default_timeout];
+    partition : bool [@default false];
   } [@@deriving of_sexp, fields]
+
+  let t_of_sexp sexp =
+    let t = t_of_sexp sexp in
+    if t.partition then begin
+      match t.action with
+      | None -> of_sexp_error "partition field requires action field" sexp;
+      | Some (Bash _) -> of_sexp_error "partition field requires an action of (run ..)" sexp
+      | Some (Shexp _) -> ()
+    end;
+    t
+  ;;
 end
 
 module Compile_c_conf = struct

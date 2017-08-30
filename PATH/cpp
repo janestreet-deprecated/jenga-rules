@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -e -o pipefail
+
+function remove-in-file-included-from {
+    stdin="$(cat)"
+    if [ "$(grep -v "^In file included from" <<< "$stdin" || true)" ]; then
+        echo "$stdin"
+    fi
+}
+
+(/usr/bin/cpp "$@" 2>&1 >&3 |
+    ((grep -v "warning: missing terminating ' character" || true) | remove-in-file-included-from) >&2) 3>&1

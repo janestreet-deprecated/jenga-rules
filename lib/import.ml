@@ -197,11 +197,11 @@ module Action = struct
 
   include Jenga_lib.Api.Action
 
-  let process ?env ?sandbox ?ignore_stderr ~dir prog args =
+  let process ?(env = []) ?sandbox ?ignore_stderr ~dir prog args =
     let prog, args =
       match env with
-      | None -> prog, args
-      | Some env ->
+      | [] -> prog, args
+      | _ :: _ ->
         [%test_eq: bool] (String.mem prog '=') false;
         let env = List.map env ~f:(fun (key, data) -> sprintf "%s=%s" key data) in
         "/usr/bin/env", List.concat [ env; prog :: args; ]

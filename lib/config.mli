@@ -12,6 +12,9 @@ val findlib_conf_default : string option
 (** Directory containing the scripts required by the rules *)
 val script_dir : Path.t
 
+(** Directory containing executables required by the rules *)
+val priority_path_dir : Path.t
+
 (** Whether we are running inside Jane Street or from publicly released packages *)
 val public : bool
 
