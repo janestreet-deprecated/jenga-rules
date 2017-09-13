@@ -3719,7 +3719,15 @@ let staged_link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
         ; "-ccopt"; "-fPIC"
         ; "-runtime-variant"; "_pic"
         ; "-output-complete-obj"
-        ] @ link_flags
+        ]
+        (* side-step issue where the compiler expects register r10 to be unchanged across
+           a call to caml_call_gc@plt, which is not true if the symbol resolution happens
+           right then. This works by forcing the symbol resolution to happen at load time
+           instead. See jane/emacs/dev/feature-explorer-basics/ecamlize-jane-fe-jeng2 *)
+        @ (if String.is_suffix Mode.exe ~suffix:".so"
+           then [ "-ccopt"; "-Wl,-z,now" ]
+           else [])
+        @ link_flags
       else link_flags
     in
     Action.process ~dir
