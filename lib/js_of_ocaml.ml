@@ -487,7 +487,8 @@ let rules_for_executable
       ~other_flags
       ~build_info ~hg_version ~dir ~flags ~js_files ~target:runtime_js ]
 
-let gen_html_for_inline_tests ~libname ~argv ~drop_test ~exe =
+let gen_html_for_inline_tests ~libname ~argv ~drop_test ~exe
+  ~inline_test_runner_env_clearing_directives =
   let make_script ?src content =
     let src = match src with
       | None -> ""
@@ -503,12 +504,17 @@ let gen_html_for_inline_tests ~libname ~argv ~drop_test ~exe =
         let all = "dummy" :: argv in
         String.concat ~sep:", " (List.map ~f:(sprintf "'%s'") all)
       in
-      (* We [export TZ] so that tests do not depend on the local timezone. *)
+      let env =
+        List.map inline_test_runner_env_clearing_directives ~f:(fun (k,v) ->
+          sprintf "'%s':'%s'" k v
+        )
+        |> String.concat ~sep:","
+      in
       String.concat ~sep:"\n"
         [ make_script
             (sprintf "var process = { argv : [%s],
-                                      env  : {'TZ':'America/New_York'},
-                                      exit : (function (code){ throw ('exit with code ' + code)}) };" argv);
+                                      env  : {%s},
+                                      exit : (function (code){ throw ('exit with code ' + code)}) };" env argv);
           make_script ~src:exe ""
         ]
   in

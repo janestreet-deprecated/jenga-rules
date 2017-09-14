@@ -91,4 +91,5 @@ val gen_html_for_inline_tests
   -> argv: string list
   -> drop_test: bool
   -> exe: string
+  -> inline_test_runner_env_clearing_directives:(string * string) list
   -> string
