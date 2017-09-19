@@ -535,6 +535,9 @@ module Library_conf = struct
     (* Whether the lib is supposed to build in javascript. *)
     js_of_ocaml : Js_of_ocaml_conf.t sexp_option;
 
+    (* Whether the lib uses naked pointers *)
+    uses_naked_pointers : bool [@default false];
+
 
     includes : String_with_vars.t sexp_list;
     library_flags : String_with_vars.t sexp_list;

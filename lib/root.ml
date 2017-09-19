@@ -2242,6 +2242,7 @@ module MC = struct
     wrapped : bool;
     compat32 : bool;
     findlib_include_flags : string list Findlib.Query.t;
+    uses_naked_pointers : bool;
   }
 end
 
@@ -2721,7 +2722,7 @@ let compile_mli mc ~name ~deps_shared_across_lib =
   )
 
 let native_compile_ml mc ~name ~deps_shared_across_lib =
-  let {MC. dc; dir; libname; wrapped; exists_mli; _ } = mc in
+  let {MC. dc; dir; libname; wrapped; exists_mli; uses_naked_pointers; _ } = mc in
   let kind = ML in
   let pp_deps = get_pp_deps ~mc in
   let pp_args = get_pp_com_args ~kind ~mc ~name in
@@ -2762,6 +2763,11 @@ let native_compile_ml mc ~name ~deps_shared_across_lib =
     let deps,open_renaming_args = open_renaming deps mc in
     Findlib.Query.result_and mc.findlib_include_flags (Dep.both (Dep.all_unit deps) pp_args)
     *>>| fun (external_include_flags, ((),pp_args)) ->
+    if Compiler_selection.no_naked_pointers && uses_naked_pointers then begin
+      Located_error.raisef
+        ~loc:{ source = File ml; line = 1; start_col = 0; end_col = 0 }
+        !"%{Path}.ml cannot be built in no-naked-pointers mode" ml ()
+    end;
     Action.process
       ~dir
       ocamlopt_path
@@ -2896,7 +2902,7 @@ let setup_ml_compile_rules
       ~js_of_ocaml ~compat32
       dc ~dir ~libname ~wrapped ~for_executable ~can_setup_inline_runners
       ~preprocessor_deps ~preprocess_spec ~names_spec ~libraries_written_by_user
-      ~lint
+      ~lint ~uses_naked_pointers
   =
   let default_pp = None in
   let names_spec_intfs, names_spec_impls, names_spec_modules =
@@ -2923,7 +2929,8 @@ let setup_ml_compile_rules
       exists_mli = names_spec_has_intf name;
       wrapped;
       findlib_include_flags;
-      compat32
+      compat32;
+      uses_naked_pointers;
     }
   in
   let compilation_rules =
@@ -4066,6 +4073,7 @@ let executables_rules (dc : DC.t) ~dir e_conf =
         then Some (sprintf !"depending on an executable (%{BN}) doesn't make sense" x)
         else None)
       ~lint
+      ~uses_naked_pointers:false
   in
   let check_no_dead_code =
     let _, _, modules = eval_names_spec ~dc names_spec in
@@ -5238,6 +5246,7 @@ let library_rules dc ~dir library_conf =
       ~js_of_ocaml:None
       ~compat32:(Option.is_some library_conf.js_of_ocaml)
       ~lint:library_conf.lint
+      ~uses_naked_pointers:library_conf.uses_naked_pointers
   in
   let c_names = Library_conf.c_names library_conf in
   let o_names = Library_conf_interpret.o_names ~dir library_conf in

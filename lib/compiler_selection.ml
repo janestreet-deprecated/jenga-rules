@@ -26,6 +26,7 @@ let compiler_dir = Filename.dirname compiler_bin_dir
 
 let flambda = get_bool "flambda"
 let with_frame_pointers = get_bool "with_frame_pointers"
+let no_naked_pointers = get_bool "with_no_naked_pointers"
 let spacetime = get_bool "spacetime"
 
 let m32 = List.mem ["i386"] (get_conf "architecture") ~equal:String.equal

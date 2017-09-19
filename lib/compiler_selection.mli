@@ -20,3 +20,4 @@ val m32 : bool
 val flambda : bool
 val with_frame_pointers : bool
 val spacetime : bool
+val no_naked_pointers : bool
