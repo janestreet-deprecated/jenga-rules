@@ -144,7 +144,6 @@ end = struct
     | Bigarray
     | Dynlink
     | Graphics
-    | Nums
     | Ocamlcommon
     | Ocamlopttoplevel
     | Ocamltoplevel
@@ -160,7 +159,6 @@ end = struct
     | Bigarray         -> "bigarray"
     | Dynlink          -> "dynlink"
     | Graphics         -> "graphics"
-    | Nums             -> "nums"
     | Ocamlcommon      -> "ocamlcommon"
     | Ocamlopttoplevel -> "ocamlopttoplevel"
     | Ocamltoplevel    -> "ocamltoplevel"
@@ -179,7 +177,6 @@ end = struct
       [ Bigarray         , ["bigarray"]
       ; Dynlink          , ["dynlink"]
       ; Graphics         , ["graphics";"graphicsX11"]
-      ; Nums             , ["int_misc";"nat";"big_int";"arith_flags";"ratio";"num";"arith_status"]
       ; Ocamlcommon      , []
       ; Ocamlopttoplevel , []
       ; Ocamltoplevel    , []
@@ -201,7 +198,7 @@ end = struct
   let libdep_name t = Libdep_name.of_string (to_string t)
 
   let artifact_dir_relative_to_stdlib_dir = function
-    | Bigarray | Dynlink | Graphics | Nums | Str | Stdlib | Unix -> None
+    | Bigarray | Dynlink | Graphics | Str | Stdlib | Unix -> None
     | Threads -> Some "threads"
     | Ocamlcommon | Ocamlopttoplevel | Ocamltoplevel | Ocamlbytecomp | Ocamloptcomp ->
       Some "compiler-libs"
@@ -212,7 +209,7 @@ end = struct
     | Some s -> Some ("+" ^ s)
 
   let transitive_deps = function
-    | Bigarray | Dynlink | Graphics | Nums | Str | Stdlib | Unix
+    | Bigarray | Dynlink | Graphics | Str | Stdlib | Unix
     | Ocamlcommon | Ocamlbytecomp | Ocamloptcomp -> []
     | Threads -> [ Unix ]
     | Ocamltoplevel -> [ Ocamlcommon ; Ocamlbytecomp ]
@@ -220,7 +217,7 @@ end = struct
 
   let supported_in_javascript = function
     | Ocamlcommon | Ocamlbytecomp | Ocamltoplevel
-    | Bigarray | Nums | Stdlib
+    | Bigarray | Stdlib
       -> true
     | Ocamloptcomp | Ocamlopttoplevel
     | Dynlink | Graphics | Str | Threads | Unix
@@ -233,7 +230,6 @@ end = struct
       | Bigarray         -> "bigarray"
       | Dynlink          -> "dynlink"
       | Graphics         -> "graphics"
-      | Nums             -> "num"
       | Ocamlcommon      -> "compiler-libs.common"
       | Ocamltoplevel    -> "compiler-libs.toplevel"
       | Ocamlopttoplevel -> "compiler-libs.opttoplevel"

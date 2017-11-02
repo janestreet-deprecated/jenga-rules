@@ -669,7 +669,8 @@ end = struct
         | [] ->
           assert false
         | lib :: other_libs ->
-          failposf ~pos:(dummy_position (relative ~dir:lib.source_path "jbuild"))
+          Located_error.raisef
+            ~loc:(dummy_position (relative ~dir:lib.source_path "jbuild"))
             !"Multiple definitions of library '%{LN}'.\n\
               Found in the following other locations:\n%s"
             libname
@@ -2939,9 +2940,11 @@ let setup_ml_compile_rules
       match exists_ml with
       | false ->
         if exists_mli
-        then failposf ~pos:(dummy_position (BN.suffixed ~dir name ".mli"))
+        then Located_error.raisef
+               ~loc:(dummy_position (BN.suffixed ~dir name ".mli"))
                "this .mli doesn't have a corresponding .ml" ()
-        else failposf ~pos:(dummy_position (User_or_gen_config.source_file ~dir))
+        else Located_error.raisef
+               ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
                !"there is neither .ml nor .mli for module %{BN}" name ()
       | true ->
         let disallowed_module_dep x =
@@ -3123,7 +3126,7 @@ module Ordering = struct
           let dir = Path.dirname target in
           let cycle = find_shortest_cycle_using_floyd_warshal ~dir alist in
           let cycle = cycle @ [List.hd_exn cycle] in
-          failposf ~pos:(dummy_position (User_or_gen_config.source_file ~dir))
+          Located_error.raisef ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
             "dependency cycle: %s" (String.concat ~sep:"->" (List.map ~f:BN.to_string cycle))
             ()
         | Some mod_ ->
@@ -3562,6 +3565,20 @@ end = struct
     (* CentOS 7 *)
     "libgmp.so.10";
     "libpcre.so.1";
+    (* These are zookeeper/kafka dependencies that kafka-dev confirmed
+       with linux-admin to be available on every box in the firm.
+    *)
+    "libcrypt.so.1";
+    "libcrypto.so.10";
+    "libgsasl.so.7";
+    "libgssapi_krb5.so.2";
+    "libidn.so.11";
+    "libntlm.so.0";
+    "libfreebl3.so";
+    "libsasl2.so.2";
+    "libsasl2.so.3";
+    "libssl.so.10";
+    "libzookeeper_mt.so.2";
   ]
 
   let standard =
@@ -3587,7 +3604,7 @@ end = struct
     match unexpected with
     | [] -> ()
     | _ :: _ ->
-      failposf ~pos:(dummy_position (relative ~dir:(dirname exe) "jbuild"))
+      Located_error.raisef ~loc:(dummy_position (relative ~dir:(dirname exe) "jbuild"))
         "%s has unexpected dynamic dependencies: %s\nAllowed: %s\nActual: %s"
         (Path.basename exe) (String.concat ~sep:" " unexpected)
         (String.concat ~sep:" " allowed)
@@ -4022,7 +4039,7 @@ let link_executable (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir ~wrapped ~libn
             (Fe.Projections_check.error_msg_dep ~dir ~exe ~allowed_projections:allow
              *>>| Option.iter ~f:(fun error_msg ->
                let source = User_or_gen_config.source_file ~dir in
-               failposf ~pos:(dummy_position source) "%s" error_msg ()));
+               Located_error.raisef ~loc:(dummy_position source) "%s" error_msg ()));
           ]
       in
       [rule]
@@ -4051,8 +4068,9 @@ let executables_rules (dc : DC.t) ~dir e_conf =
     match List.filter names ~f:(fun name -> not (dc.impl_is_buildable name)) with
     | [] -> ()
     | name :: _ ->
-      let pos = dummy_position (User_or_gen_config.source_file ~dir) in
-      failposf ~pos !"executable %{BN} cannot be built as there is no %{BN}.ml"
+      Located_error.raisef
+        ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
+        !"executable %{BN} cannot be built as there is no %{BN}.ml"
         name name ()
   end;
   let dc = Executables_conf_interpret.extend_dc e_conf dc in
@@ -4092,7 +4110,7 @@ let executables_rules (dc : DC.t) ~dir e_conf =
         match diff modules_except_executables deps with
         | [] -> ()
         | _ :: _ as dead_modules ->
-          failposf ~pos:(dummy_position (User_or_gen_config.source_file ~dir))
+          Located_error.raisef ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
             !"modules %s are not referenced by any executable"
             (String.concat ~sep:", " (List.map ~f:BN.to_string dead_modules))
             ()
@@ -4472,7 +4490,7 @@ let jane_script_rules dc
       | Lib_dep.In_the_tree lib -> Some lib
       | From_compiler_distribution _ -> None
       | Findlib_package pkg ->
-        failposf ~pos:(dummy_position dir)
+        Located_error.raisef ~loc:(dummy_position dir)
           !"Embedding findlib package in jane-script is not currently supported \
             (trying to embed: %{sexp:Findlib_package.t})" pkg ())
   in
@@ -5429,8 +5447,7 @@ let enforce_style ~dir ({ exceptions } : Enforce_style_conf.t) =
          |> String.Set.of_list in
        let invalid_exceptions = Set.diff exceptions to_style in
        if not (Set.is_empty invalid_exceptions)
-       then failposf
-              ~pos:(dummy_position (User_or_gen_config.source_file ~dir))
+       then Located_error.raisef ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
               "[enforce_style] has [exceptions] for non existent files: %s"
               (invalid_exceptions |> Set.to_list |> String.concat ~sep:" ") ();
        let to_style = Set.to_list (Set.diff to_style exceptions) in
@@ -5786,7 +5803,7 @@ let self_contained_projections =
       Fe.Projections_check.libs_in_projections_are_self_contained ~projections ~libs_by_dir
       *>>| Option.iter ~f:(fun error_msg ->
         let source = User_or_gen_config.source_file ~dir in
-        failposf ~pos:(dummy_position source) "%s" error_msg ())
+        Located_error.raisef ~loc:(dummy_position source) "%s" error_msg ())
     ]
 ;;
 
@@ -5805,16 +5822,18 @@ let create_directory_context ~dir jbuilds libmap artifacts k =
                 ~unit:(LN.to_string lib) with
         | None -> ()
         | Some compiler_lib ->
-          let pos = dummy_position (User_or_gen_config.source_file ~dir) in
-          failposf ~pos !"library %{LN} conflicts with module from library %s"
+          Located_error.raisef
+            ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
+            !"library %{LN} conflicts with module from library %s"
             lib (From_compiler_distribution.to_string compiler_lib) ()
       );
       List.iter (ocaml_libraries jbuild) ~f:(fun lib ->
         match Libmap.resolve_libdep_name libmap lib with
         | Some _ -> ()
         | None ->
-          let pos = dummy_position (User_or_gen_config.source_file ~dir) in
-          failposf ~pos !"unknown library %{Libdep_name}" lib ()));
+          Located_error.raisef
+            ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
+            !"unknown library %{Libdep_name}" lib ()));
     let merlinflags =
       let extra_disabled_warnings = List.concat_map jbuilds ~f:extra_disabled_warnings in
       let disabled_warnings = Compiler_config.disabled_warnings @ extra_disabled_warnings in

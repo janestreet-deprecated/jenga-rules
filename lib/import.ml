@@ -254,5 +254,3 @@ let dummy_position path : Located_error.Loc.t =
   ; end_col   = 0
   }
 ;;
-
-let failposf ~pos fmt = Located_error.raisef ~loc:pos fmt

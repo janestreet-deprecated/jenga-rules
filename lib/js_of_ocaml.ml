@@ -54,11 +54,12 @@ let runtime_files artifacts =
       ]
   )
 
-let runtime_files_for_lib_in_compiler_distribution ~artifacts t =
-  match From_compiler_distribution.to_string t with
+let runtime_files_for_lib ~artifacts t =
+  match t with
   | "graphics"      -> [runtime_file_path artifacts "graphics.js"]
   | "ocamlbytecomp" -> [runtime_file_path artifacts "toplevel.js";
                         runtime_file_path artifacts "dynlink.js"]
+  | "nums_flat"
   | "nums"          -> [runtime_file_path artifacts "nat.js"]
   | _               -> []
 
@@ -116,7 +117,7 @@ let check_libs_exn ~dir ~required_by libs =
   in
   if not (List.is_empty bad_libs)
   then
-    failposf ~pos:(dummy_position (relative ~dir "jbuild"))
+    Located_error.raisef ~loc:(dummy_position (relative ~dir "jbuild"))
       !"%s is supposed to work in javascript but it has \
         problematic dependencies: %s" required_by
       (String.concat ~sep:" " (List.map bad_libs ~f:Lib_dep.to_string)) ()
@@ -307,7 +308,7 @@ let rule_for_library_jsdeps ~dir libname files =
 let all_deps_for_libs ~artifacts ~path_to_ocaml_artifact (libs : Lib_dep.t list) : Path.t list Dep.t =
   Dep.List.concat_map libs ~f:(function
     | From_compiler_distribution l ->
-      runtime_files_for_lib_in_compiler_distribution ~artifacts l
+      runtime_files_for_lib ~artifacts (From_compiler_distribution.to_string l)
       |> Dep.all
     | Findlib_package _ -> Dep.return []
     | In_the_tree {supported_in_javascript = false; _} -> Dep.return []
@@ -315,7 +316,11 @@ let all_deps_for_libs ~artifacts ~path_to_ocaml_artifact (libs : Lib_dep.t list)
       let path =
         path_to_ocaml_artifact ~lib_in_the_tree:lib.name ~suf:jsdeps_suf
       in
-      file_words path *>>| List.map ~f:Path.root_relative
+      Dep.both
+        (runtime_files_for_lib ~artifacts (LN.to_string lib.name) |> Dep.all)
+        (file_words path)
+      *>>| fun (runtime_files,deps) ->
+      runtime_files @ List.map ~f:Path.root_relative deps
   )
 
 let rules_for_executable
