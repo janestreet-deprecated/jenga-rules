@@ -10,7 +10,6 @@ let opam_of_ocamlfind s =
   | "findlib" -> "ocamlfind"
   | "bigarray"
   | "compiler-libs"
-  | "num"
   | "unix"
   | "dynlink"
   | "str"

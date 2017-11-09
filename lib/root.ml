@@ -1068,7 +1068,6 @@ module LL : sig
   (** Direct access to the artifacts (merlin, ocaml-plugin etc) *)
   val path_to_ocaml_artifact : lib_in_the_tree:LN.t -> suf:string -> Path.t
   val submodule_cmi_paths : Lib_dep.t -> Path.t list Dep.t
-  val in_the_tree_library_dir : LN.t -> Path.t
 
   (** How to build the liblinks directories. *)
   val api_rule : dir:Path.t -> Libmap.t -> Rule.t
@@ -1365,8 +1364,6 @@ end = struct
       (* We might want to implement that, to embed findlib packages? *)
       return []
   ;;
-
-  let in_the_tree_library_dir libname = In_the_tree.liblink_dir ~libname
 
   let api_rule = In_the_tree.api_rule
   let rules = In_the_tree.rules
@@ -5142,20 +5139,24 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
              aren't installed. *)
           List.concat_map libs ~f:(function
             | In_the_tree lib ->
-              let library_dir = LL.in_the_tree_library_dir lib.name in
+              (* We tell merlin where to find build artifacts (cmi, cmt, cmti) using B,
+                 and where to find .ml/.mli using S. *)
               let src = reach_from ~dir lib.source_path in
-              let cmi = reach_from ~dir library_dir in
-              [
-                sprintf "S %s" src;
-                sprintf "CMT %s" src;
-                sprintf "CMI %s" cmi;
-              ]
-            | From_compiler_distribution lib ->
-              if String.is_prefix (From_compiler_distribution.to_string lib)
-                   ~prefix:"ocaml" then
-                [ "PKG compiler-libs" ]
+              let paths = [ sprintf "B %s" src; sprintf "S %s" src ] in
+              if LN.is_flat lib.name then
+                sprintf "FLG -open %s" (LN.to_module lib.name) :: paths
               else
-                []
+                paths
+            | From_compiler_distribution lib ->
+              let whatever_line_will_make_merlin_work =
+                let name = From_compiler_distribution.to_string lib in
+                if String.is_prefix name ~prefix:"ocaml"
+                then "PKG compiler-libs"
+                else if name = "threads"
+                then "PKG threads.posix"
+                else "PKG " ^ name
+              in
+              [ whatever_line_will_make_merlin_work ]
             | Findlib_package p ->
               [ "PKG " ^ Findlib_package_name.to_string p.name ]
           )
