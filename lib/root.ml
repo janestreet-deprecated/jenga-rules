@@ -571,7 +571,7 @@ let manifest_dirs_rule ~repo =
        there seems to be no way to silence these messages.
        We don't sandbox because the command creates .hg/blackbox.log.*)
     bashf ~ignore_stderr:true ~dir:repo ~sandbox:Sandbox.none
-      !"%{quote} status -acdmn | sed 's|^|./|' | rev | cut -d/ -f2- | rev | sort -u > %{quote}"
+      !"HGPLAIN= %{quote} status -acdmn | sed 's|^|./|' | rev | cut -d/ -f2- | rev | sort -u > %{quote}"
       hg_prog (basename target)
   )
 
@@ -3254,6 +3254,7 @@ module Hg_version = struct
       let open Async in
       run_action_now_stdout (
         Action.process ~ignore_stderr:true ~dir:Path.the_root
+          ~env:["HGPLAIN", ""]
           hg_prog ["showconfig"; "jhg.omake-dirstate-suffix";]
       ) >>| String.strip)
 
@@ -3264,9 +3265,9 @@ module Hg_version = struct
        working copy has only untracked files. We prefer the "+" to mean "the working copy
        is clean", because that guarantees that artifacts can be rebuilt, so we check the
        cleanliness of the [hg status] instead. *)
-    "{ echo \"hg log -r . --template '{node|short}\\n'\"; \
-       echo \"hg status | head -n 1 | wc -l\"; \
-       echo \"hg showconfig paths.default\"; \
+    "{ echo \"HGPLAIN= hg log -r . --template '{node|short}\\n'\"; \
+       echo \"HGPLAIN= hg status | head -n 1 | wc -l\"; \
+       echo \"HGPLAIN= hg showconfig paths.default\"; \
       } | \
      parallel -j 3 -k | \
      { readarray -t lines; \

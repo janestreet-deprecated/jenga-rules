@@ -5,7 +5,7 @@ open! Import
    valid Kerberos credentials out to a running jenga process. *)
 let krb5ccname = Var.register "KRB5CCNAME"
 
-let wikipub    = Path.absolute "/j/office/app/wikipub/bin/2017-11-07_dbd28e4088aa"
+let wikipub    = Path.absolute "/j/office/app/wikipub/bin/2017-11-14_e54ae6b3c10a"
 (* uncomment this for testing. *)
 (* let () = ignore wikipub
  * let wikipub    = root_relative "app/wikipub/bin/main.exe" *)
@@ -38,7 +38,7 @@ let replace_extension_if_any path ~suf =
   relative ~dir:(Path.dirname path) (without_ext ^ suf)
 ;;
 
-let standard_formats_glob_string = "*.{org,md,mkd}"
+let standard_formats_glob_string = "*.{org,md,mkd,mlt}"
 let standard_formats_glob ~dir = Glob.create ~dir standard_formats_glob_string
 
 let registered_files ~dir = function
@@ -50,7 +50,7 @@ let list_images ~dir file =
   let format =
     match snd (Filename.split_extension (Path.basename file)) with
     | Some "mkd" | Some "md" -> "--markdown"
-    | Some "org" -> "--org"
+    | Some "org" | Some "mlt" -> "--org"
     | None | Some _ ->
       raise_s [%sexp ("Wikipub only supports files matching "
                       ^ standard_formats_glob_string : string), ~~(file : Path.t)]

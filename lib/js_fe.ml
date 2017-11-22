@@ -190,7 +190,7 @@ module Make(Hg : sig
                the repository is not clean, but just in case something goes wrong, let's
                approximate in the direction of consider that more things should be
                reviewed. *)
-            Action.process ~dir:repo "hg" ["st"; "-mardcun"])
+            Action.process ~dir:repo ~env:["HGPLAIN", ""] "hg" ["st"; "-mardcun"])
           *>>| fun x ->
           List.map (String.split_lines x) ~f:(relative ~dir:repo)
         ) *>>| Path.Set.of_list
