@@ -667,6 +667,7 @@ module Toplevel_expect_tests = struct
   type t =
     { libraries   : Libdep_name.t sexp_list
     ; no_ppx_jane : bool [@default false]
+    ; safe_string : bool [@default false]
     }
   [@@deriving of_sexp]
 end

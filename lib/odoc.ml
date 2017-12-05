@@ -259,27 +259,32 @@ let copy_css_rule ~dir =
     ~action:(Action.process ~ignore_stderr:true ~dir odoc_path [ "css"; "-o"; "." ])
 
 let setup ~dir ~lib_in_the_tree:(lib:Lib_in_the_tree.t) ~lib_deps step =
-  lib_deps *>>= fun libraries ->
-  let libraries =
-    List.filter_map libraries ~f:(function
-      | Lib_dep.In_the_tree lib -> Some lib.name
-      | From_compiler_distribution _ | Findlib_package _ -> None
-    )
-  in
-  let search_paths =
-    List.map libraries ~f:(fun lib ->
-      Path.relative ~dir:odoc_output_dir (LN.to_string lib))
-  in
-  match step with
-  | `Compile ->
-    odoc_compile_rules ~dir ~search_paths ~libname:lib.name ~remote_dir:lib.source_path
-  | `Html ->
-    let html_aliases_for_deps =
-      List.map libraries ~f:(fun l ->
-        Dep.alias
-          (alias ~dir:(Path.relative ~dir:html_output_dir (LN.to_string l)))
+  (* odoc loops on this lib, so skip it for now *)
+  if LN.to_string lib.name = "jira_protocol_lib" then
+    return []
+  else (
+    lib_deps *>>= fun libraries ->
+    let libraries =
+      List.filter_map libraries ~f:(function
+        | Lib_dep.In_the_tree lib -> Some lib.name
+        | From_compiler_distribution _ | Findlib_package _ -> None
       )
     in
-    odoc_html_rules ~dir ~search_paths lib
-    *>>| fun rules ->
-    Rule.alias (alias ~dir) html_aliases_for_deps :: rules
+    let search_paths =
+      List.map libraries ~f:(fun lib ->
+        Path.relative ~dir:odoc_output_dir (LN.to_string lib))
+    in
+    match step with
+    | `Compile ->
+      odoc_compile_rules ~dir ~search_paths ~libname:lib.name ~remote_dir:lib.source_path
+    | `Html ->
+      let html_aliases_for_deps =
+        List.map libraries ~f:(fun l ->
+          Dep.alias
+            (alias ~dir:(Path.relative ~dir:html_output_dir (LN.to_string l)))
+        )
+      in
+      odoc_html_rules ~dir ~search_paths lib
+      *>>| fun rules ->
+      Rule.alias (alias ~dir) html_aliases_for_deps :: rules
+  )

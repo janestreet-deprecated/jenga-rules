@@ -1742,16 +1742,20 @@ module Dep_conf_interpret = struct
          source files AND buildable files. *)
       Dep.all_unit (List.map paths ~f:Dep.path)
     | Files_recursively_in spec_dir ->
-
       (* Add deps on the recursive list of files, *and* their contents. Only works
          if the directory only contains source files, otherwise we wouldn't depend
-         on what is buildable but not built. *)
+         on what is buildable but not built. We detect most of this property below
+         by checking for the jbuilds, but in the general case, we're still missing
+         cases where directories are buildable rather than files. *)
       let spec_dir = relative ~dir (expand_vars ~dir spec_dir) in
       deep_unignored_subdirs ~dir:spec_dir *>>= fun dirs ->
       Dep.all_unit (
         List.map dirs ~f:(fun dir ->
           Dep.glob_listing (Glob.create ~dir ~kinds:[`File] "*") *>>= fun paths ->
-          Dep.all_unit (List.map paths ~f:Dep.source_if_it_exists)
+          if List.exists paths ~f:(fun p -> Path.basename p = "jbuild")
+          then failwithf !"files_recursively_in only works for source files, so it \
+                           can't be used on %{Path}" dir ()
+          else Dep.all_unit (List.map paths ~f:Dep.source_if_it_exists)
         )
       )
 
@@ -4214,7 +4218,7 @@ let toplevel_runtime_libs libmap ~dir ~libname_for_libdeps
   libs @ (Option.to_list extra_lib |> List.map ~f:Lib_dep.of_lib_in_the_tree)
 ;;
 
-let toplevel_info_rules libmap ~dir ~libname_for_libdeps ~target ~extra_lib =
+let toplevel_info_rules libmap ~dir ~libname_for_libdeps ~target ~extra_lib ~safe_string =
   let base = target ^ ".toplevel.info" in
   let c = relative ~dir (base ^ ".c") in
   let o = relative ~dir (base ^ ".o") in
@@ -4236,8 +4240,9 @@ let toplevel_info_rules libmap ~dir ~libname_for_libdeps ~target ~extra_lib =
       in
       let sexp =
         [%sexp
-           { deps = (libs : LN.t list)
-           ; dir  = (dir  : Path.t   )
+           { deps : LN.t list = libs
+           ; dir  : Path.t
+           ; safe_string : bool
            }
         ]
       in
@@ -4251,7 +4256,7 @@ let toplevel_info_rules libmap ~dir ~libname_for_libdeps ~target ~extra_lib =
 ;;
 
 let toplevel_rules dc ~dir ~libname_for_libdeps ~(extra_lib : Lib_in_the_tree.t option)
-      ~target ~main ~more_deps =
+      ~target ~main ~more_deps ~safe_string =
   let toplevel_info = relative ~dir (target ^ ".toplevel.info.o") in
   let native_with_unsuffixed_exe =
     (module struct
@@ -4282,6 +4287,7 @@ let toplevel_rules dc ~dir ~libname_for_libdeps ~(extra_lib : Lib_in_the_tree.t 
   List.concat
     [ link_rule
     ; toplevel_info_rules dc.libmap ~dir ~libname_for_libdeps ~extra_lib ~target
+        ~safe_string
     ]
 ;;
 
@@ -4305,6 +4311,7 @@ let utop_rules (dc : DC.t) ~lib_in_the_tree =
         ~main:utop_main
         ~libname_for_libdeps
         ~extra_lib
+        ~safe_string:false
     ; [ Rule.alias (Alias.utop ~dir) (
           if dc.no_utop_alias then [] else
             [Dep.path (relative ~dir "utop")]
@@ -4345,11 +4352,14 @@ let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t
         ~main:toplevel_expect_tests_main
         ~libname_for_libdeps
         ~extra_lib
+        ~safe_string:conf.safe_string
     ; gen_libdeps dc.libmap ~dir ~pps:[] ~ppx_runtime_libraries:[]
         ~libs:(Toplevel_expect_tests_interpret.libraries conf
                |> Libmap.resolve_libdep_names_exn dc.libmap)
         libname_for_libdeps
-    ; [ Rule.alias (Alias.runtest ~dir) [runtest] ]
+    ; [ Rule.alias (Alias.runtest ~dir) [runtest]
+      ; Rule.alias (Alias.runtime_deps_of_tests ~dir) [ Dep.path exe ]
+      ]
     ; (if link_executables_on_disk
        then [ Rule.alias (Alias.default ~dir) [Dep.path exe] ]
        else [])
