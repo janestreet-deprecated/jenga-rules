@@ -160,11 +160,25 @@ let build_profile =
   | Error (`Bad s) -> failwithf "invalid BUILD_PROFILE %s" s ()
 
 let version_util_support =
-  Var.register_bool "VERSION_UTIL_SUPPORT"
-    ~default:(not Config.public
-              && match build_profile with
-              | `Fast_build -> false
-              | `Fast_exe | `Default -> true)
+  let default =
+    not Config.public
+    && match build_profile with
+    | `Fast_build -> false
+    | `Fast_exe | `Default -> true
+  in
+  Var.map
+    (Var.register_enumeration "VERSION_UTIL_SUPPORT"
+       ~choices:(String.Map.of_alist_exn
+                   [ "false", `False
+                   ; "true", `True `No_log
+                   ; "true-with-log-of-pluses", `True `Log_of_pluses
+                   ])
+       ~default:(Bool.to_string default)
+       ~fallback:(fun _ -> None))
+    ~f:(function
+      | Ok a -> a
+      | Error (`Bad s) -> failwithf "invalid VERSION_UTIL_SUPPORT %s" s ())
+;;
 
 let stable_build_info =
   Var.peek_register_bool "STABLE_BUILD_INFO"
@@ -3265,28 +3279,39 @@ module Hg_version = struct
   let hg_version_out = root_relative "hg_version.out"
 
   let compute_hg_version =
-    (* We used to call $(hg id -i), but this command doesn't output the "+" when the
-       working copy has only untracked files. We prefer the "+" to mean "the working copy
-       is clean", because that guarantees that artifacts can be rebuilt, so we check the
-       cleanliness of the [hg status] instead. *)
-    "{ echo \"HGPLAIN= hg log -r . --template '{node|short}\\n'\"; \
-       echo \"HGPLAIN= hg status | head -n 1 | wc -l\"; \
-       echo \"HGPLAIN= hg showconfig paths.default\"; \
-      } | \
-     parallel -j 3 -k | \
-     { readarray -t lines; \
-       rev=\"${lines[0]}\"; \
-       if [ \"${lines[1]}\" != 0 ]; then status=+; else status=; fi; \
-       path=\"${lines[2]}\"; \
-       echo \"${path}_${rev}${status}\"; \
-     }"
+    Memo.general (fun log_pluses ->
+      let log =
+        match log_pluses with
+        | `No_log -> ""
+        | `Log_of_pluses ->
+          " | tee >(while read line; do \
+                      echo $(date \"+%Y-%m-%d %H:%M:%S\") \"$line\" >> .hg/version-util-log; \
+                    done) "
+      in
+      (* We used to call $(hg id -i), but this command doesn't output the "+" when the
+         working copy has only untracked files. We prefer the "+" to mean "the working copy
+         is clean", because that guarantees that artifacts can be rebuilt, so we check the
+         cleanliness of the [hg status] instead. *)
+      let rev_command = {|HGPLAIN= hg log -r . --template "{node|short}\n"|} in
+      let status_command = sprintf {|HGPLAIN= hg status | head -n 1%s | wc -l|} log in
+      let paths_command = {|HGPLAIN= hg showconfig paths.default|} in
+      sprintf
+        !"{ echo %{quote}; echo %{quote}; echo %{quote}; } | \
+          parallel -j 3 -k | \
+          { readarray -t lines; \
+            rev=\"${lines[0]}\"; \
+            if [ \"${lines[1]}\" != 0 ]; then status=+; else status=; fi; \
+            path=\"${lines[2]}\"; \
+            echo \"${path}_${rev}${status}\"; \
+          }" rev_command status_command paths_command
+    )
 
   let hg_version_out_rule =
     Rule.create ~targets:[hg_version_out] (
       begin
         Dep.getenv version_util_support *>>= function
-        | false -> return "NO_VERSION_UTIL"
-        | true ->
+        | `False -> return "NO_VERSION_UTIL"
+        | `True log_of_pluses ->
           Dep.both hg_dirstate_suffix all_the_repos
           *>>= fun (dirstate_suffix, repos) ->
           (* In here we need to be compatible with the old dirstate extension, and the new
@@ -3317,7 +3342,7 @@ module Hg_version = struct
                 "output=\"$(%s)\"; \
                  echo -n \"$output\" > .hg/jenga-latest-hg-version; \
                  echo -n \"$output\""
-                compute_hg_version
+                (compute_hg_version log_of_pluses)
             )
           ))
           *>>| String.concat ~sep:"\n"
@@ -3353,16 +3378,17 @@ module Hg_version = struct
              The existence of .hg/dirstate.for-jenga.v6 and the presence of that filename
              in the current file is how hg knows to create the new file rather than the
              old one. *)
-        if Var.peek version_util_support
-        then
-          run_action_now (bashf ~ignore_stderr:true ~dir
-                            !"echo -n %{quote} > .hg/dirstate.for-jenga.v6; \
-                              touch .hg/jenga-latest-hg-version; \
-                              output=\"$(%s)\"; \
-                              if [ \"$output\" != \"$(cat .hg/jenga-latest-hg-version 2>/dev/null || true)\" ]; \
-                              then uuid > .hg/dirstate.for-jenga.txt; \
-                              fi" (reach_from ~dir path_of_here) compute_hg_version)
-        else
+        match Var.peek version_util_support with
+        | `True log_of_pluses ->
+          run_action_now
+            (bashf ~ignore_stderr:true ~dir
+               !"echo -n %{quote} > .hg/dirstate.for-jenga.v6; \
+                 touch .hg/jenga-latest-hg-version; \
+                 output=\"$(%s)\"; \
+                 if [ \"$output\" != \"$(cat .hg/jenga-latest-hg-version 2>/dev/null || true)\" ]; \
+                 then uuid > .hg/dirstate.for-jenga.txt; \
+                 fi" (reach_from ~dir path_of_here) (compute_hg_version log_of_pluses))
+        | `False ->
           run_action_now (bashf ~ignore_stderr:true ~dir
                             !"echo -n %{quote} > .hg/dirstate.for-jenga.v6"
                             (reach_from ~dir path_of_here))
@@ -5062,13 +5088,15 @@ let merlin_ppx_directives ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
   let merge_approx approx1 approx2 =
     match approx1, approx2 with
     | `No_code, v | v, `No_code -> v
-    | `Cant_express, _ | _, `Cant_express -> `Cant_express
+    | `Cant_express use_jane1, `Cant_express use_jane2 ->
+      `Cant_express (use_jane1 && use_jane2)
+    | (`Cant_express _ as v), _ | _, (`Cant_express _ as v) -> v
     | `No_preprocessing, `No_preprocessing -> `No_preprocessing
-    | `No_preprocessing, _ | _, `No_preprocessing -> `Cant_express
+    | `No_preprocessing, _ | _, `No_preprocessing -> `Cant_express true
     | `Pps pps_and_flags1, `Pps pps_and_flags2 ->
       if [%compare.equal: PP.t list * string list] pps_and_flags1 pps_and_flags2
       then approx1
-      else `Cant_express
+      else `Cant_express true
   in
   (* We approximate by telling merlin to use preprocessors even the jbuild uses them on a
      subset of files. *)
@@ -5077,7 +5105,13 @@ let merlin_ppx_directives ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
       let pps, flags = Pp_or_flag.split pps in
       `Pps (pps, flags)
     | [] | [(`no_preprocessing, _)] -> `No_preprocessing
-    | _ :: _ :: _ | [(`command _, _)] -> `Cant_express
+    | _ :: _ as l ->
+      let can_probably_use_ppx_jane =
+        not (List.exists l ~f:(function
+          | (`command _, _) -> true
+          | ((`pps _ | `no_preprocessing), _) -> false))
+      in
+      `Cant_express can_probably_use_ppx_jane
   in
   let approx =
     List.fold jbuilds ~init:`No_code ~f:(fun acc jbuild_item ->
@@ -5089,9 +5123,10 @@ let merlin_ppx_directives ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
   in
   match approx with
   | `No_code | `No_preprocessing -> Dep.return []
-  | `Cant_express when String.(=) (Path.to_string dir) "external/ocaml-migrate-parsetree/src" ->
+  | `Cant_express false ->
+    (* depending on ppx_jane would create a dependency cycles *)
     Dep.return []
-  | `Pps _ | `Cant_express as approx ->
+  | `Pps _ | `Cant_express true as approx ->
     let pps, flags =
       match approx with
       | `Pps (pps, flags) ->
@@ -5102,7 +5137,7 @@ let merlin_ppx_directives ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
           )
         in
         pps, flags
-      | `Cant_express -> [PP.jane], []
+      | `Cant_express _ -> [PP.jane], []
     in
     get_ppx_command ~name:(BN.of_string "fake") ~kind:None ~dir
       ~can_setup_inline_runners:true ~enforce_style:false ~compat32:false

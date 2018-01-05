@@ -111,6 +111,8 @@ end = struct
 
 end
 
+let _ = Var.register_bool
+
 let force (lazy x) = x
 
 module Path = struct
