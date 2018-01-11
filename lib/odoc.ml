@@ -21,17 +21,28 @@ let dash_Is ~dir dirs =
   List.concat_map dirs ~f:(fun path -> ["-I"; Path.reach_from ~dir path])
 
 let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
-  Dep.both
-    (Dep.glob_listing (Glob.create ~dir:remote_dir "*.cmt"))
-    (Dep.glob_listing (Glob.create ~dir:remote_dir "*.cmti"))
-  *>>| fun (cmts, cmtis) ->
-  let bn_to_path =
-    (* [cmts @ cmtis] ensures that we always keep the path to the cmti in the
+  Lib_modules.load ~dir:remote_dir ~libname
+  *>>| fun (lib_modules : Lib_modules.t) ->
+  let pn_to_path =
+    let impls =
+      if intf_of_lib_exists ~libname ~modules:lib_modules.impls_and_intfs then
+        lib_modules.impls
+      else
+        BN.of_libname libname :: lib_modules.impls
+    in
+    (* first impls, then intfs to ensure that we always keep the path to the cmti in the
        map when both a .cmt and .cmti is present. *)
-    List.fold (cmts @ cmtis) ~init:String.Map.empty ~f:(fun bns path ->
-      let str_name = Filename.chop_extension (Path.basename path) in
-      let bn = PN.of_string str_name in
-      Map.add bns ~key:(PN.to_module bn) ~data:(bn, path)
+    let impls =
+      List.fold impls ~init:String.Map.empty ~f:(fun map bn ->
+        let pn = PN.of_barename ~wrapped:true ~libname bn in
+        let cmt = PN.suffixed ~dir:remote_dir pn ".cmt" in
+        Map.add map ~key:(PN.to_module pn) ~data:(pn, cmt)
+      )
+    in
+    List.fold lib_modules.intfs ~init:impls ~f:(fun map bn ->
+      let pn = PN.of_barename ~wrapped:true ~libname bn in
+      let cmti = PN.suffixed ~dir:remote_dir pn ".cmti" in
+      Map.add map ~key:(PN.to_module pn) ~data:(pn, cmti)
     )
   in
   let search_path_deps =
@@ -41,7 +52,7 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
             (List.map search_paths ~f:(fun dir -> Dep.alias (alias ~dir)))))
   in
   let targets, rules =
-    Map.fold bn_to_path ~init:([], []) ~f:(
+    Map.fold pn_to_path ~init:([], []) ~f:(
       fun ~key:current_module ~data:(_, path) (targets, rules) ->
         let target_basename = Filename.chop_extension (Path.basename path) ^ ".odoc" in
         let target = Path.relative ~dir target_basename in
@@ -62,9 +73,9 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
                   None
                 else
                   let _digest = Digest.from_hex digest_hex in
-                  match Map.find bn_to_path this_module with
+                  match Map.find pn_to_path this_module with
                   | None -> None
-                  | Some (bn, _) -> Some (Dep.path @@ PN.suffixed ~dir bn ".odoc")
+                  | Some (pn, _) -> Some (Dep.path @@ PN.suffixed ~dir pn ".odoc")
               )
             in
             Dep.all_unit (search_path_deps :: deps)
@@ -261,7 +272,7 @@ let copy_css_rule ~dir =
 let setup ~dir ~lib_in_the_tree:(lib:Lib_in_the_tree.t) ~lib_deps step =
   (* odoc loops on this lib, so skip it for now *)
   if LN.to_string lib.name = "jira_protocol_lib" then
-    return []
+    return [Rule.alias (alias ~dir) []]
   else (
     lib_deps *>>= fun libraries ->
     let libraries =

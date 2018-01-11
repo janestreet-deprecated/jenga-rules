@@ -3,26 +3,6 @@ open Import
 open Jbuild_types
 open Ocaml_types
 
-(* THE control for whether wrapping is used for executables and libraries.
-   wrapping means we make compilation units names unique using module aliases, by
-   prefixing all the compilation units with $lib__, and creating $lib__.ml-gen that
-   aliases all the long names to the short names. And we also create $lib.ml-gen if the
-   user or the jbuild doesn't say how to build $lib.ml. *)
-
-let wrapped_lib ~libname ~modules =
-  match modules with
-  | [ name ] when BN.is_lib ~libname name -> false
-  | _ -> true
-let internal_intf_of_lib_impl = BN.of_string ""
-let internal_intf_of_lib ~libname = LN.to_string libname ^ LN.prefix_sep
-let internal_intf_of_lib_module ~libname = LN.to_module libname ^ LN.prefix_sep
-let intf_of_lib_exists ~libname ~modules =
-  List.mem modules (BN.of_libname libname) ~equal:BN.equal
-let add_intf_of_lib_if_needed ~libname ~modules =
-  if intf_of_lib_exists ~libname ~modules
-  then modules
-  else modules @ [ (BN.of_libname libname) ]
-
 module List = struct
   include List
   let concat_cartesian_product l1 l2 =
@@ -755,43 +735,6 @@ end = struct
     |> resolve_libdep_names_exn t
 end
 
-(*----------------------------------------------------------------------
- Use types to capture different varieties of module names
-----------------------------------------------------------------------*)
-
-(**
-   Name of a single module within a library, with its first letter matching the case of
-   the first letter of the .ml/i files containing the module code.
-
-   Both bare names 'foo' and 'Foo' refer to the same module, but the case of the first
-   letter is used to determine the file names of .ml, .mli and build artifacts.
-
-   Bare module name that matches the name of the library is treated specially:
-   users are not allowed to write such a module in wrapped libraries
-   and users can only write such module in unwrapped libraries.
-**)
-
-
-module Prefixed_module_name : sig
-  include module type of struct include Prefixed_module_name end
-
-  val of_barename : wrapped:bool -> libname:LN.t -> BN.t -> t
-end = struct
-  include PN
-
-  let of_barename ~wrapped ~libname name =
-    of_string (
-      if not wrapped || BN.is_lib ~libname name
-      then BN.to_string name
-      else LN.prefix libname ^ (String.capitalize (BN.to_string name))
-    )
-end
-module PN = Prefixed_module_name
-
-(*----------------------------------------------------------------------
- end - names
-----------------------------------------------------------------------*)
-
 module User_or_gen_config : sig
 
   val load : dir: Path.t -> Jbuild.t list Dep.t
@@ -1003,48 +946,6 @@ let link_to_remote ~remote ~local =
       ]
     )
   )
-
-module Lib_modules : sig
-  (** A representation of the list of modules in a library, other than the module
-      named after the library itself. *)
-  type t =
-    { impls : BN.t list
-    ; intfs : BN.t list
-    ; impls_and_intfs : BN.t list
-    ; bin_annot : bool
-    }
-  [@@deriving fields]
-  val rule : dir:Path.t -> libname:LN.t -> t -> Rule.t
-  val load : dir:Path.t -> libname:LN.t -> t Dep.t
-end = struct
-  type t =
-    { impls : BN.t list
-    ; intfs : BN.t list
-    ; impls_and_intfs : BN.t list
-    ; bin_annot : bool
-    }
-  [@@deriving sexp, fields]
-
-  let file ~dir ~libname = LN.suffixed ~dir libname ".modules"
-
-  let rule ~dir ~libname t =
-    let t =
-      { impls = List.sort ~cmp:BN.compare t.impls
-      ; intfs = List.sort ~cmp:BN.compare t.intfs
-      ; impls_and_intfs = List.sort ~cmp:BN.compare t.impls_and_intfs
-      ; bin_annot = t.bin_annot;
-      }
-    in
-    Rule.write_string
-      (t |> sexp_of_t |> Sexp.to_string_hum)
-      ~target:(file ~dir ~libname)
-
-  let load ~dir ~libname =
-    let file = file ~dir ~libname in
-    Dep.contents file
-    *>>| fun str ->
-    Sexp.of_string_conv_exn ~source:(File file) str t_of_sexp
-end
 
 let pack_order_file ~dir ~libname = LN.suffixed ~dir libname ".pack-order"
 let stub_names_file ~dir ~libname = LN.suffixed ~dir libname ".stub.names"
@@ -5170,7 +5071,7 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
               let wrapped = match jbuild with
                 | `library conf ->
                   let _, _, modules = eval_names_spec ~dc conf.modules in
-                  wrapped_lib ~libname:conf.name ~modules
+                  lib_needs_internal_intf ~libname:conf.name ~modules
                 | `executables conf -> conf.wrapped
                 | _ -> false
               in
@@ -5294,7 +5195,11 @@ let library_rules dc ~dir library_conf =
   let names_spec = Library_conf.modules library_conf in
   let wrapped =
     let _, _, modules = eval_names_spec ~dc names_spec in
-    wrapped_lib ~libname ~modules
+    (* wrapped/unwrapped is pretty much for the same for libs that don't need an internal
+       intf, but unwrapped is better because we avoid generating an internal intf for no
+       reason. When we build everything as wrapped, maybe we should rename ~wrapped to
+       ~lib_needs_internal_intf *)
+    lib_needs_internal_intf ~libname ~modules
   in
   let for_executable = false in
   let can_setup_inline_runners = true in
@@ -5524,7 +5429,6 @@ public_repo_rules
 ----------------------------------------------------------------------*)
 
 module Public_release = Public_release.Make(struct
-    module Lib_modules = Lib_modules
     module User_or_gen_config = User_or_gen_config
     let public_release_files = public_release_files_path
     let deep_unignored_subdirs = deep_unignored_subdirs

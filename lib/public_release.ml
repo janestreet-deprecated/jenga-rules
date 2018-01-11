@@ -14,12 +14,6 @@ let build_servers =
 let opam_switches = List.map build_servers ~f:fst
 
 module Make(Jenga_root : sig
-    module Lib_modules : sig
-      type t
-      val impls_and_intfs : t -> BN.t list
-      val load : dir:Path.t -> libname:LN.t -> t Dep.t
-    end
-
     module User_or_gen_config : sig
       val load : dir: Path.t -> Jbuild.t list Dep.t
     end
