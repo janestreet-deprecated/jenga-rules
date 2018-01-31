@@ -307,7 +307,7 @@ module Inline_tests = struct
     (** Per-file test timeout *)
     timeout : Time.Span.t sexp_option;
     (** Flags to pass to the inline test runner *)
-    flags : string sexp_list;
+    flags : Ordered_set_lang.t sexp_option;
     (** The alias that runs the tests runners in *)
     alias : Alias_basename.t sexp_option;
     (** Should inline_tests_runner be built and run in native environment *)
@@ -374,7 +374,7 @@ module Inline_tests = struct
   let default : t = {
     deps = [];
     timeout = None;
-    flags = [];
+    flags = None;
     alias = None;
     native = None;
     javascript = None;
@@ -382,6 +382,11 @@ module Inline_tests = struct
     uses_catalog = No;
     sandbox = Sandbox_conf.hardlink;
   }
+
+  let flags t =
+    Ordered_set_lang.eval_opt_with_standard
+      t.flags
+      ~standard:["-allow-output-patterns"]
 end
 
 (** The timeout of user commands. *)

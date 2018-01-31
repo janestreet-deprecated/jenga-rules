@@ -4263,9 +4263,11 @@ let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t
                Dep.path exe      ::
                LL.dep_on_ocaml_artifacts libs ~suffixes:[".cmi"])
             *>>| fun () ->
-            bashf ~dir !"./ocaml-expect %s %s %{quote}"
+
+            bashf ~dir !"./ocaml-expect %s %s %s %{quote}"
               (if inline_test_color    then "" else "-no-color")
               (if inline_test_in_place then "-in-place" else "")
+              "-allow-output-patterns"
               (Path.basename mlt_file))))
   in
 
@@ -4749,14 +4751,15 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
              ])
           ~js_of_ocaml
           ~exe)
-    ; [ inline_tests_html_rule ~dir ~libname ~flags:user_config.flags ~html;
-        inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
-          ~script:exe_js ~runtime_environment:`Javascript
-          ~uses_catalog:user_config.uses_catalog;
-        inline_tests_script_rule ~dir ~libname ~flags:user_config.flags
-          ~script:exe ~runtime_environment:(if only_shared_object then `Emacs else `Exe)
-            ~uses_catalog:user_config.uses_catalog
-       ]
+    ; (let flags = Inline_tests.flags user_config in
+       [ inline_tests_html_rule ~dir ~libname ~flags ~html;
+         inline_tests_script_rule ~dir ~libname ~flags
+           ~script:exe_js ~runtime_environment:`Javascript
+           ~uses_catalog:user_config.uses_catalog;
+         inline_tests_script_rule ~dir ~libname ~flags
+           ~script:exe ~runtime_environment:(if only_shared_object then `Emacs else `Exe)
+           ~uses_catalog:user_config.uses_catalog
+       ])
     ; (
        let inline_test_exe_paths =
          Dep.memoize ~name:"inline-test-exe-paths" (

@@ -46,13 +46,7 @@ let runtime_file_path artifacts f =
 let compiler_distribution_file f = Path.relative ~dir:dot_js_dir_ocamlwhere f
 
 let runtime_files artifacts =
-  Dep.all (
-    List.map ~f:(runtime_file_path artifacts)
-      [
-        "runtime.js";
-        "weak.js";
-      ]
-  )
+  Dep.all [runtime_file_path artifacts "runtime.js"]
 
 let runtime_files_for_lib ~artifacts t =
   match t with
