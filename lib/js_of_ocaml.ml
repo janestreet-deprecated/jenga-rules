@@ -513,7 +513,7 @@ let gen_html_for_inline_tests ~libname ~argv ~drop_test ~exe
         [ make_script
             (sprintf "var process = { argv : [%s],
                                       env  : {%s},
-                                      exit : (function (code){ throw ('exit with code ' + code)}) };" env argv);
+                                      exit : (function (code){ throw ('exit with code ' + code)}) };" argv env);
           make_script ~src:exe ""
         ]
   in

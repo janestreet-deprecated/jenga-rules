@@ -271,7 +271,7 @@ let portable_int63 =
                | `Fast_build | `Default -> true
                | `Fast_exe -> false))
 
-let unbox_closures = Var.peek_register_bool "WITH_UNBOX_CLOSURES" ~default:true
+let unbox_closures = Var.peek_register_bool "WITH_UNBOX_CLOSURES" ~default:false
 
 let sandbox_rules = Var.peek_register_bool "SANDBOX_RULES" ~default:false
 
