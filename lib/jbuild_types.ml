@@ -386,7 +386,7 @@ module Inline_tests = struct
   let flags t =
     Ordered_set_lang.eval_opt_with_standard
       t.flags
-      ~standard:["-allow-output-patterns"]
+      ~standard:[]
 end
 
 (** The timeout of user commands. *)
@@ -670,7 +670,8 @@ end
 
 module Toplevel_expect_tests = struct
   type t =
-    { libraries   : Libdep_name.t sexp_list
+    { flags       : Ordered_set_lang.t sexp_option
+    ; libraries   : Libdep_name.t sexp_list
     ; no_ppx_jane : bool [@default false]
     ; safe_string : bool [@default false]
     }

@@ -2420,11 +2420,11 @@ let generate_pp mc ~kind ~name =
   match pp_style with
   | Nothing ->
     generate_pp_using_ppx mc ~kind ~name ~pps:[]
-      ~flags:["-no-check"; "-no-optcomp"]
+      ~flags:["-no-check"]
 
   | Command com ->
     generate_pp_using_ppx mc ~kind ~name ~pps:[]
-      ~flags:["-no-check"; "-no-optcomp"; "-pp"; com]
+      ~flags:["-no-check"; "-pp"; com]
 
   | PP (pps, flags) ->
     generate_pp_using_ppx mc ~kind ~name ~pps ~flags
@@ -4263,12 +4263,14 @@ let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t
                Dep.path exe      ::
                LL.dep_on_ocaml_artifacts libs ~suffixes:[".cmi"])
             *>>| fun () ->
-
-            bashf ~dir !"./ocaml-expect %s %s %s %{quote}"
-              (if inline_test_color    then "" else "-no-color")
-              (if inline_test_in_place then "-in-place" else "")
-              "-allow-output-patterns"
-              (Path.basename mlt_file))))
+            Action.process ~dir
+              "./ocaml-expect"
+              (List.concat
+                 [ (if inline_test_color then [] else ["-no-color"])
+                 ; (if inline_test_in_place then ["-in-place"] else [])
+                 ; Ordered_set_lang.eval_opt_with_standard conf.flags ~standard:[]
+                 ; [ Path.basename mlt_file ]
+                 ]))))
   in
 
   let toplevel_expect_tests_main =
