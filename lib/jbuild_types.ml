@@ -731,8 +731,24 @@ end
 
 module Enforce_style_conf = struct
   type t =
-    { exceptions : String.Set.t [@default String.Set.empty] }
-  [@@deriving of_sexp]
+    { enabled       : bool         [@default true]             [@sexp_drop_default]
+    ; exceptions    : String.Set.t [@default String.Set.empty] [@sexp_drop_if Set.is_empty]
+    }
+  [@@deriving sexp]
+
+  let default = { enabled = true; exceptions = String.Set.empty }
+
+  let t_of_sexp sexp =
+    match (sexp : Sexp.t) with
+    | List [] ->
+      of_sexp_error
+        "[enforce_style] is now enabled by default, so you should delete \
+         [(enforce_style ())].  If you want to be explicit about opting into \
+         [enforce_style], you can say [(enforce_style ((enabled true)))]."
+        sexp;
+| _ -> t_of_sexp sexp
+;;
+
 end
 
 module Wikipub_conf = struct
@@ -804,6 +820,10 @@ module Jbuild = struct
   | `wikipub of Wikipub_conf.t
   ]
   [@@deriving of_sexp]
+
+  module Sexp_of = struct
+    type t = [ `enforce_style of Enforce_style_conf.t ] [@@deriving sexp_of]
+  end
 end
 
 module If_ocaml_code_is_dynlinkable = struct

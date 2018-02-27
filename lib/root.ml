@@ -37,7 +37,7 @@ let relative_rule ~dir ~targets ~deps ~non_relative_deps monadic_action =
   let targets = List.map targets ~f:(fun name -> Path.relative ~dir name) in
   let deps =
     non_relative_deps @
-      List.map deps ~f:(fun name -> Dep.path (Path.relative ~dir name))
+    List.map deps ~f:(fun name -> Dep.path (Path.relative ~dir name))
   in
   Rule.create ~targets
     (Dep.both (Dep.all_unit deps) monadic_action
@@ -80,6 +80,7 @@ module Alias = struct
   include Alias1
   let c ~dir = Alias.create ~dir "c"
   let default ~dir = Alias.create ~dir "DEFAULT"
+  let enforce_style ~dir = Alias.create ~dir "enforce-style"
   let runtest ~dir = Alias.create ~dir "runtest"
   let run_x_library_inlining_sensitive_tests ~dir =
     Alias.create ~dir "run-x-library-inlining-sensitive-tests"
@@ -120,8 +121,8 @@ let use_compiler_flavor flavor =
   :: ccopts Compiler_config.arch_cflags
 
 (*----------------------------------------------------------------------
- getenv...
-----------------------------------------------------------------------*)
+  getenv...
+  ----------------------------------------------------------------------*)
 
 
 let build_profile =
@@ -163,8 +164,8 @@ let version_util_support =
 let stable_build_info =
   Var.peek_register_bool "STABLE_BUILD_INFO"
     ~default:(match build_profile with
-              | `Fast_build -> true
-              | `Fast_exe | `Default -> false)
+      | `Fast_build -> true
+      | `Fast_exe | `Default -> false)
 
 (* LINK_EXECUTABLES=true means that executables should be linked in DEFAULT.
    LINK_EXECUTABLES=false means that executables shouldn't be linked in DEFAULT,
@@ -199,14 +200,14 @@ let link_executables_on_disk =
 let x_library_inlining =
   Var.peek_register_bool "X_LIBRARY_INLINING"
     ~default:(match build_profile with
-              | `Fast_build | `Default -> false
-              | `Fast_exe -> true)
+      | `Fast_build | `Default -> false
+      | `Fast_exe -> true)
 
 let dynlinkable_code =
   Var.peek_register_bool "DYNLINKABLE_CODE"
     ~default:(match build_profile with
-             | `Fast_build | `Default -> true
-             | `Fast_exe -> false)
+      | `Fast_build | `Default -> true
+      | `Fast_exe -> false)
 
 let bin_annot =
   Var.peek_register_bool "BIN_ANNOT" ~default:true
@@ -245,8 +246,8 @@ let for_javascript_development =
      a better debugging experience. *)
   Var.peek_register_bool "FOR_JS_DEVEL"
     ~default:(match build_profile with
-             | `Fast_build | `Default -> true
-             | `Fast_exe -> false)
+      | `Fast_build | `Default -> true
+      | `Fast_exe -> false)
 
 let javascript_sourcemap =
   (* Enable javascript sourcemap *)
@@ -450,8 +451,8 @@ let expand_vars_in_string ~dir s =
   expand_vars ~dir (String_with_vars.of_string s)
 
 (*----------------------------------------------------------------------
- bash
-----------------------------------------------------------------------*)
+  bash
+  ----------------------------------------------------------------------*)
 
 module Bash : sig
 
@@ -479,8 +480,8 @@ let bash1 ?target prog args = Bash.create ~prog ~args ~target
 
 
 (*----------------------------------------------------------------------
- jbuild-ignore
-----------------------------------------------------------------------*)
+  jbuild-ignore
+  ----------------------------------------------------------------------*)
 
 let ignore_filter ~dir =
   let path = relative ~dir "jbuild-ignore" in
@@ -525,8 +526,8 @@ let rec is_ignored dir =
       does_ignore ~dir:(Path.dirname dir) dir
 
 (*----------------------------------------------------------------------
- all_the_repos
-----------------------------------------------------------------------*)
+  all_the_repos
+  ----------------------------------------------------------------------*)
 
 let all_the_repos =
   Dep.memoize ~name:"all the hg repos" (
@@ -542,8 +543,8 @@ let all_the_repos =
   )
 
 (*----------------------------------------------------------------------
- hg manifest
-----------------------------------------------------------------------*)
+  hg manifest
+  ----------------------------------------------------------------------*)
 
 let hg_prog = Config.hg_prog
 
@@ -595,8 +596,8 @@ let public_release_files_rule =
     ~target:public_release_files_path
 
 (*----------------------------------------------------------------------
- Libmap
-----------------------------------------------------------------------*)
+  Libmap
+  ----------------------------------------------------------------------*)
 
 module From_compiler_distribution = Ocaml_types.From_compiler_distribution
 module Lib_dep                    = Ocaml_types.Lib_dep
@@ -704,7 +705,7 @@ end = struct
           lib_dep
         else
           failheref [%here]
-           !"library %{LN} has a public name: %{Findlib_package_name}.\n\
+            !"library %{LN} has a public name: %{Findlib_package_name}.\n\
               You must refer to it in the jenga rules by its public name, \
               otherwise things won't work properly in the public release"
             lib.name public_name
@@ -754,15 +755,29 @@ end = struct
       Dep.contents jbuild
       *>>| fun contents ->
       let jbuilds =
-        Sexp.many_of_string_conv_exn ~source:(File jbuild)
-          contents [%of_sexp: Jbuild_with_if.t filtered]
+        Sexp.many_of_string_conv_exn ~source:(File jbuild) contents
+          [%of_sexp: Jbuild_with_if.t filtered]
         |> List.concat
         |> List.concat_map ~f:(function
           | #Jbuild.t as t -> [t]
           | `if_ocaml_code_is_dynlinkable { if_dynlinkable; if_not_dynlinkable } ->
             if dynlinkable_code then if_dynlinkable else if_not_dynlinkable)
       in
-      if not (Path.is_descendant ~dir:external_lib_dir dir) &&
+      let in_external = Path.is_descendant ~dir:external_lib_dir dir in
+      let jbuilds =
+        match List.exists jbuilds ~f:(function `enforce_style _ -> true | _ -> false) with
+        | true -> jbuilds
+        | false ->
+          if in_external
+          then Located_error.raisef ~loc:(dummy_position (source_file ~dir))
+                 !"Every jbuild below %{Path} must specify whether to enforce_style.  \
+                   Usually, the right choice is to opt out: \
+                   %{sexp:Jbuild.Sexp_of.t}."
+                 external_lib_dir
+                 (`enforce_style { Enforce_style_conf.default with enabled = false }) ();
+          `enforce_style Enforce_style_conf.default :: jbuilds
+      in
+      if not in_external &&
          List.exists jbuilds ~f:(function
            | `library { name; _} -> LN.is_flat name
            | _ -> false)
@@ -823,8 +838,8 @@ let prefix_args ~wrapped ~libname ~name =
   else ["-o"; PN.to_string (PN.of_barename ~wrapped ~libname name)]
 
 (*----------------------------------------------------------------------
- generate/compile renaming file (replacement for -pack)
-----------------------------------------------------------------------*)
+  generate/compile renaming file (replacement for -pack)
+  ----------------------------------------------------------------------*)
 
 let dash_ml_gen = ".ml-gen"
 
@@ -911,13 +926,13 @@ let compile_renaming (module Mode : Ocaml_mode.S) ~libname ~dir ~internal =
       ~dir
       (ocamlcomp_path (module Mode))
       (List.concat [
-        bin_annot_flag;
-        read_or_create_cmi cmi_action dash_ml_gen;
-        ["-w"; "@a-49"]; (* warning 49: Absent cmi file when looking up module alias. *)
-        ["-no-alias-deps"];
-        ["-c"];
-        ["-impl"; basename ml_gen];
-      ])
+         bin_annot_flag;
+         read_or_create_cmi cmi_action dash_ml_gen;
+         ["-w"; "@a-49"]; (* warning 49: Absent cmi file when looking up module alias. *)
+         ["-no-alias-deps"];
+         ["-c"];
+         ["-impl"; basename ml_gen];
+       ])
   )
 
 let renaming_rules ~dir ~libname ~modules =
@@ -931,8 +946,8 @@ let renaming_rules ~dir ~libname ~modules =
   )
 
 (*----------------------------------------------------------------------
- liblinks
-----------------------------------------------------------------------*)
+  liblinks
+  ----------------------------------------------------------------------*)
 
 let link_to_remote ~remote ~local =
   let dir = dirname local in
@@ -1012,7 +1027,7 @@ end = struct
           | ".cmx" ->
             Dep.alias (Alias.submodule_cmxs ~dir:(liblink_dir ~libname))
           | _ -> Dep.return ()
-            end;
+          end;
         ])
 
     let liblink_default ~libname =
@@ -1050,14 +1065,14 @@ end = struct
     let liblink_submodule_cmi_paths ~lib =
       submodule_names ~lib *>>| fun subs ->
       liblink_refname ~libname:lib.name ~name:(LN.to_string lib.name ^ ".cmi") ::
-        List.filter_map subs.impls_and_intfs ~f:(fun sub ->
-          if BN.is_lib ~libname:lib.name sub
-          then None
-          else
-            let wrapped = true in
-            let pn = PN.to_string (PN.of_barename ~wrapped ~libname:lib.name sub) ^ ".cmi" in
-            Some (liblink_refname ~libname:lib.name ~name:pn)
-        )
+      List.filter_map subs.impls_and_intfs ~f:(fun sub ->
+        if BN.is_lib ~libname:lib.name sub
+        then None
+        else
+          let wrapped = true in
+          let pn = PN.to_string (PN.of_barename ~wrapped ~libname:lib.name sub) ^ ".cmi" in
+          Some (liblink_refname ~libname:lib.name ~name:pn)
+      )
 
     let main_api ~(lib:Lib_in_the_tree.t) =
       let cmi_name = LN.to_string lib.name ^ ".cmi" in
@@ -1132,7 +1147,7 @@ end = struct
             dep :: List.map names ~f:(fun name -> Dep.path (relative ~dir name))
           in
           Rule.alias (alias_in_dir ~dir)
-              [Dep.group_dependencies (Dep.all_unit dependencies)]
+            [Dep.group_dependencies (Dep.all_unit dependencies)]
         in
         [
           make_alias Alias.submodule_cmis cmis
@@ -1141,10 +1156,10 @@ end = struct
         ]
       in
       let default_rule =
-          (* Setup a .DEFAULT alias in the lib-links directory, to indirect to the
-             .lib_artifacts alias in the directory where the library code is actually found.
-             This .DEFAULT alias is for the use of remote references to the library (i.e. when
-             linking .exe) to force the entire default build, including inline_tests *)
+        (* Setup a .DEFAULT alias in the lib-links directory, to indirect to the
+           .lib_artifacts alias in the directory where the library code is actually found.
+           This .DEFAULT alias is for the use of remote references to the library (i.e. when
+           linking .exe) to force the entire default build, including inline_tests *)
         Rule.default ~dir:(liblink_dir ~libname:lib.name) [
           Dep.alias (Alias.lib_artifacts ~dir:lib.source_path)
         ]
@@ -1297,8 +1312,8 @@ let fake_libname_of_exes names =
   | first_name :: _ -> LN.of_string (bin_prefix ^ first_name)
 
 (*----------------------------------------------------------------------
- directory context (dc)
-----------------------------------------------------------------------*)
+  directory context (dc)
+  ----------------------------------------------------------------------*)
 
 module DC = struct
   type t = {
@@ -1344,8 +1359,8 @@ let libs_transitive_closure libmap libs =
 ;;
 
 (*----------------------------------------------------------------------
- local_dependencies
-----------------------------------------------------------------------*)
+  local_dependencies
+  ----------------------------------------------------------------------*)
 
 let dep_append ys xsd =
   xsd *>>| fun xs -> ys @ xs
@@ -1401,15 +1416,15 @@ let local_dependencies : (
     Dep.all_unit (List.map paths ~f:Dep.path)
 
 (*----------------------------------------------------------------------
- objdeps/libdeps
-----------------------------------------------------------------------*)
+  objdeps/libdeps
+  ----------------------------------------------------------------------*)
 
 let gen_transitive_deps
   : to_string:('v -> string)
- -> one_step : 'v list Dep.t
- -> read_deps : ('v -> 'v list Dep.t)
- -> target : Path.t
- -> Rule.t =
+  -> one_step : 'v list Dep.t
+  -> read_deps : ('v -> 'v list Dep.t)
+  -> target : Path.t
+  -> Rule.t =
   fun ~to_string ~one_step ~read_deps ~target ->
     Rule.create ~targets:[target] (
       one_step *>>= fun names1 ->
@@ -1502,9 +1517,9 @@ end = struct
   let read_import_line line =
     match String.split line ~on:'\t' with
       ["";crc;name] ->
-        assert (Int.(=) (String.length crc) 32);
-        let crc = if String.(=) crc weak_crc then Weak else Crc crc in
-        (crc,name)
+      assert (Int.(=) (String.length crc) 32);
+      let crc = if String.(=) crc weak_crc then Weak else Crc crc in
+      (crc,name)
     | _ -> failwith "read_import_line"
 
   let rec skip_to_interface_banner = function
@@ -1633,8 +1648,8 @@ let gen_libdeps libmap ~dir ~libs ~pps ~ppx_runtime_libraries libname =
   ]
 
 (*----------------------------------------------------------------------
- Rule_conf, Alias_conf (user rules)
-----------------------------------------------------------------------*)
+  Rule_conf, Alias_conf (user rules)
+  ----------------------------------------------------------------------*)
 
 let standard_c_include_search_path_from ~dir = [
   ".";
@@ -1863,7 +1878,7 @@ module Lib_clients = struct
               Libmap.load_lib_deps libmap path *>>| List.filter_map ~f:(function
                 | Lib_dep.In_the_tree lib -> Some (lib.name, dir)
                 | From_compiler_distribution _ | Findlib_package _ -> None)
-          )) *>>| fun client_dir_by_lib ->
+            )) *>>| fun client_dir_by_lib ->
           (* Map and Set give consistent ordering across reexecution of the Dep.t. *)
           let client_dir_by_lib = List.concat client_dir_by_lib in
           let t = LN.Map.of_alist_fold ~init:Path.Set.empty ~f:Set.add client_dir_by_lib in
@@ -1891,8 +1906,8 @@ module Lib_clients = struct
 end
 
 (*----------------------------------------------------------------------
- dynamic flags
-----------------------------------------------------------------------*)
+  dynamic flags
+  ----------------------------------------------------------------------*)
 
 let expand_and_eval_set ~dir set ~standard =
   match set with
@@ -1915,8 +1930,8 @@ let expand_and_eval_set ~dir set ~standard =
       Ordered_set_lang.eval_with_standard set ~standard
 
 (*----------------------------------------------------------------------
- c/cxx compilation
-----------------------------------------------------------------------*)
+  c/cxx compilation
+  ----------------------------------------------------------------------*)
 
 let compile_c_or_cxx ~dir ~include_search_path ~non_include_flags
       ~non_include_flags_standard ~suf ~flavor name =
@@ -1991,8 +2006,8 @@ let user_configured_compile_c_rules ~dir { Compile_c_conf. names; c_flags; inclu
   )
 
 (*----------------------------------------------------------------------
- ocamllex/ocamlyacc
-----------------------------------------------------------------------*)
+  ocamllex/ocamlyacc
+  ----------------------------------------------------------------------*)
 
 let ocamllex_rule ~dir name =
   let suf x = suffixed ~dir name x in
@@ -2018,8 +2033,8 @@ let ocamlyacc_rule ~dir name =
     )
 
 (*----------------------------------------------------------------------
- ml/mli
-----------------------------------------------------------------------*)
+  ml/mli
+  ----------------------------------------------------------------------*)
 
 type ml_kind = ML | MLI
 
@@ -2032,8 +2047,8 @@ let ml_kind_to_flag = function
   | MLI -> "-intf"
 
 (*----------------------------------------------------------------------
- module names
-----------------------------------------------------------------------*)
+  module names
+  ----------------------------------------------------------------------*)
 
 let eval_names_spec ~dc names_spec =
   let {DC.intfs; intf_is_buildable; impls; impl_is_buildable; _} = dc in
@@ -2048,8 +2063,8 @@ let eval_names_spec ~dc names_spec =
   xs
 
 (*----------------------------------------------------------------------
- PPXset
-----------------------------------------------------------------------*)
+  PPXset
+  ----------------------------------------------------------------------*)
 
 let ppx_cache_dir = root_relative ".ppx"
 
@@ -2104,15 +2119,15 @@ end
 let ppx_executable pps = PPXset.exe_path (PPXset.create pps)
 
 (*----------------------------------------------------------------------
- pp kind
-----------------------------------------------------------------------*)
+  pp kind
+  ----------------------------------------------------------------------*)
 
 module PP_style = struct
 
   type t =
-  | Nothing
-  | Command of string
-  | PP of PP.t list * string list
+    | Nothing
+    | Command of string
+    | PP of PP.t list * string list
 
   let of_kind dc (kind:Preprocess_kind.t) =
     let {DC. dir; _} = dc in
@@ -2126,8 +2141,8 @@ module PP_style = struct
 end
 
 (*----------------------------------------------------------------------
- Lint tools
-----------------------------------------------------------------------*)
+  Lint tools
+  ----------------------------------------------------------------------*)
 
 module Lint = struct
   type t =
@@ -2141,8 +2156,8 @@ module Lint = struct
 end
 
 (*----------------------------------------------------------------------
- ML compilation context (mc)
-----------------------------------------------------------------------*)
+  ML compilation context (mc)
+  ----------------------------------------------------------------------*)
 
 module MC = struct
   type t = {
@@ -2164,8 +2179,8 @@ module MC = struct
 end
 
 (*----------------------------------------------------------------------
- lookup_pp
-----------------------------------------------------------------------*)
+  lookup_pp
+  ----------------------------------------------------------------------*)
 
 let lookup_pp dc ~default_pp ~preprocess_spec =
   let map =
@@ -2183,8 +2198,8 @@ let lookup_pp dc ~default_pp ~preprocess_spec =
   stage (fun name -> Option.value (Map.find map name) ~default)
 
 (*----------------------------------------------------------------------
- local ppx.exe
-----------------------------------------------------------------------*)
+  local ppx.exe
+  ----------------------------------------------------------------------*)
 
 let link_deps_of_unforced_libs (module Mode : Ocaml_mode.S) ~libs =
   LL.dep_on_ocaml_artifacts libs ~suffixes:Mode.cmxa_and_a
@@ -2290,8 +2305,8 @@ let generate_ppx_exe_rules libmap ~dir ~artifacts ~link_flags =
     :: List.concat_map [fl_archives; fl_include_flags] ~f:Findlib.Query.rules
 
 (*----------------------------------------------------------------------
- pp deps
-----------------------------------------------------------------------*)
+  pp deps
+  ----------------------------------------------------------------------*)
 
 let ppx_deps_without_user_deps (pps:PP.t list) : unit Dep.t list =
   [Dep.path (ppx_executable pps)]
@@ -2303,14 +2318,14 @@ let get_pp_user_deps ~mc : unit Dep.t list =
 let get_pp_deps ~mc : unit Dep.t list =
   let {MC. pp_style; _} = mc in
   get_pp_user_deps ~mc @
-    begin match pp_style with
-    | PP_style.Nothing | Command _ -> []
-    | PP (pps, _flags) -> ppx_deps_without_user_deps pps
-    end
+  begin match pp_style with
+  | PP_style.Nothing | Command _ -> []
+  | PP (pps, _flags) -> ppx_deps_without_user_deps pps
+  end
 
 (*----------------------------------------------------------------------
   pp com
-----------------------------------------------------------------------*)
+  ----------------------------------------------------------------------*)
 
 let get_ppx_command
       ~kind
@@ -2380,14 +2395,14 @@ let get_pp_com_args ~(kind:ml_kind) ~mc ~name : string list Dep.t =
     *>>| fun (prog, args) ->
     let args =
       ["-as-pp";
-         "-loc-filename"; (BN.to_string name ^ ml_kind_to_suf kind)
+       "-loc-filename"; (BN.to_string name ^ ml_kind_to_suf kind)
       ] @ args
     in
     ["-pp"; concat_quoted (prog :: args)]
 
 (*----------------------------------------------------------------------
- generate .pp
-----------------------------------------------------------------------*)
+  generate .pp
+  ----------------------------------------------------------------------*)
 
 let generate_pp_using_ppx mc ~kind ~name ~pps ~flags =
   let {MC. dc; dir; libname; can_setup_inline_runners; _} = mc in
@@ -2430,8 +2445,8 @@ let generate_pp mc ~kind ~name =
     generate_pp_using_ppx mc ~kind ~name ~pps ~flags
 
 (*----------------------------------------------------------------------
- Call lint tools
-----------------------------------------------------------------------*)
+  Call lint tools
+  ----------------------------------------------------------------------*)
 
 let call_lint_tool mc ~lint ~kind ~name =
   let {MC. dc; dir; libname; can_setup_inline_runners; _} = mc in
@@ -2462,8 +2477,8 @@ let call_lint_tool mc ~lint ~kind ~name =
   ]
 
 (*----------------------------------------------------------------------
- ocamldep / .d files
-----------------------------------------------------------------------*)
+  ocamldep / .d files
+  ----------------------------------------------------------------------*)
 
 let gen_dependencies kind ~mc ~name ~actual_modules =
   let parse_ocamldep_output_exn ~filename s = match String.lsplit2 ~on:':' s with
@@ -2541,8 +2556,8 @@ let gen_dfile kind ~disallowed_module_dep mc ~name ~actual_modules =
 ;;
 
 (*----------------------------------------------------------------------
- ocaml compilation
-----------------------------------------------------------------------*)
+  ocaml compilation
+  ----------------------------------------------------------------------*)
 
 (** returns the additional compiler arguments to compile in the presence of
     the renaming module if any,
@@ -2626,16 +2641,16 @@ let compile_mli mc ~name ~deps_shared_across_lib =
       ~dir
       ocamlc_path
       (List.concat [
-        flags;
-        pp_args;
-        external_include_flags;
-        LL.include_flags ~dir libs;
-        prefix_args;
-        ["-no-alias-deps"];
-        open_renaming_args;
-        ["-o"; basename cmi];
-        [ "-c"; "-intf"; basename mli]
-      ])
+         flags;
+         pp_args;
+         external_include_flags;
+         LL.include_flags ~dir libs;
+         prefix_args;
+         ["-no-alias-deps"];
+         open_renaming_args;
+         ["-o"; basename cmi];
+         [ "-c"; "-intf"; basename mli]
+       ])
   )
 
 let native_compile_ml mc ~name ~deps_shared_across_lib =
@@ -2671,10 +2686,10 @@ let native_compile_ml mc ~name ~deps_shared_across_lib =
       ; local_dependencies `ml Ocaml_mode.native dc ~wrapped ~libname name
       ; deps_shared_across_lib.inferred_1step_deps_cmi_maybe_cmx
       ] @ pp_deps
-        @ if exists_mli
-          then [ Dep.path cmi
-               ; local_dependencies `mli Ocaml_mode.native dc ~wrapped ~libname name ]
-          else []
+      @ if exists_mli
+      then [ Dep.path cmi
+           ; local_dependencies `mli Ocaml_mode.native dc ~wrapped ~libname name ]
+      else []
 
     in
     let deps,open_renaming_args = open_renaming deps mc in
@@ -2689,17 +2704,17 @@ let native_compile_ml mc ~name ~deps_shared_across_lib =
       ~dir
       ocamlopt_path
       (List.concat [
-        flags;
-        pp_args;
-        external_include_flags;
-        LL.include_flags ~dir libs;
-        prefix_args;
-        read_or_create_cmi (if exists_mli then `Read else `Create) ".ml";
-        ["-no-alias-deps"];
-        open_renaming_args;
-        ["-o"; basename cmx];
-        ["-c"; "-impl"; basename ml];
-      ])
+         flags;
+         pp_args;
+         external_include_flags;
+         LL.include_flags ~dir libs;
+         prefix_args;
+         read_or_create_cmi (if exists_mli then `Read else `Create) ".ml";
+         ["-no-alias-deps"];
+         open_renaming_args;
+         ["-o"; basename cmx];
+         ["-c"; "-impl"; basename ml];
+       ])
   )
 
 let byte_compile_ml mc ~compat32 ~name ~deps_shared_across_lib =
@@ -2733,8 +2748,8 @@ let byte_compile_ml mc ~compat32 ~name ~deps_shared_across_lib =
       ]
       @ pp_deps
       @ if exists_mli
-        then [ local_dependencies `mli Ocaml_mode.byte dc ~wrapped ~libname name ]
-        else []
+      then [ local_dependencies `mli Ocaml_mode.byte dc ~wrapped ~libname name ]
+      else []
     in
     let deps,open_renaming_args = open_renaming deps mc in
     Findlib.Query.result_and mc.findlib_include_flags (Dep.both (Dep.all_unit deps) pp_args)
@@ -2743,16 +2758,16 @@ let byte_compile_ml mc ~compat32 ~name ~deps_shared_across_lib =
       ~dir
       ocamlc_path
       (List.concat [
-        ocamlflags; ocamlcflags;
-        pp_args;
-        external_include_flags;
-        LL.include_flags ~dir libs;
-        prefix_args;
-        read_or_create_cmi `Read ".ml";
-        ["-no-alias-deps"];
-        open_renaming_args;
-        ["-c"; "-impl"; basename ml];
-      ])
+         ocamlflags; ocamlcflags;
+         pp_args;
+         external_include_flags;
+         LL.include_flags ~dir libs;
+         prefix_args;
+         read_or_create_cmi `Read ".ml";
+         ["-no-alias-deps"];
+         open_renaming_args;
+         ["-c"; "-impl"; basename ml];
+       ])
   )
 
 let js_compile_cmo mc ~js_of_ocaml ~name =
@@ -2807,8 +2822,8 @@ let infer_mli_auto mc ~name ~deps_shared_across_lib =
   )
 
 (*----------------------------------------------------------------------
- rules for a directory of ml
-----------------------------------------------------------------------*)
+  rules for a directory of ml
+  ----------------------------------------------------------------------*)
 
 let mem_of_list l =
   let set = BN.Hash_set.of_list l in
@@ -2963,8 +2978,8 @@ let setup_ml_compile_rules
 ;;
 
 (*----------------------------------------------------------------------
- pack ordering
-----------------------------------------------------------------------*)
+  pack ordering
+  ----------------------------------------------------------------------*)
 
 module Ordering = struct
   let find_shortest_cycle_using_floyd_warshal
@@ -3110,8 +3125,8 @@ let library_module_order ~dir ~impls ~intfs ~libname =
   )
 
 (*----------------------------------------------------------------------
- building ocaml libraries - archiving
-----------------------------------------------------------------------*)
+  building ocaml libraries - archiving
+  ----------------------------------------------------------------------*)
 
 let ocaml_library_archive dc ~compat32 ~dir ~impls ~wrapped ~libname ~flags =
   let {DC. ocamlflags; ocamlcflags; ocamloptflags; _} = dc in
@@ -3186,8 +3201,8 @@ module Hg_version = struct
         | `No_log -> ""
         | `Log_of_pluses ->
           " | tee >(while read line; do \
-                      echo $(date \"+%Y-%m-%d %H:%M:%S\") \"$line\" >> .hg/version-util-log; \
-                    done) "
+           echo $(date \"+%Y-%m-%d %H:%M:%S\") \"$line\" >> .hg/version-util-log; \
+           done) "
       in
       (* We used to call $(hg id -i), but this command doesn't output the "+" when the
          working copy has only untracked files. We prefer the "+" to mean "the working copy
@@ -3200,10 +3215,10 @@ module Hg_version = struct
         !"{ echo %{quote}; echo %{quote}; echo %{quote}; } | \
           parallel -j 3 -k | \
           { readarray -t lines; \
-            rev=\"${lines[0]}\"; \
-            if [ \"${lines[1]}\" != 0 ]; then status=+; else status=; fi; \
-            path=\"${lines[2]}\"; \
-            echo \"${path}_${rev}${status}\"; \
+          rev=\"${lines[0]}\"; \
+          if [ \"${lines[1]}\" != 0 ]; then status=+; else status=; fi; \
+          path=\"${lines[2]}\"; \
+          echo \"${path}_${rev}${status}\"; \
           }" rev_command status_command paths_command
     )
 
@@ -3269,16 +3284,16 @@ module Hg_version = struct
         let dir = root_relative dir in
         (* There can be two versions of the dirstate extension:
            - the old one that will create .hg/dirstate.for-omake.txt containing rev40 and
-             an optional +. Calling [hg show] below forces it to recreate the file, but
-             only if it's not to up-to-date (if the file was unconditionally rewritten by
-             the extension, it would make jenga loop, because build_end() would start a
-             new build).
+           an optional +. Calling [hg show] below forces it to recreate the file, but
+           only if it's not to up-to-date (if the file was unconditionally rewritten by
+           the extension, it would make jenga loop, because build_end() would start a
+           new build).
            - the new one that will create .hg/dirstate.for-jenga.txt containing an ever
-             changing value. Same as above, we force this file to change jenga's knowledge
-             of the version is stale but if it's not, we must not self-trigger ourselves.
-             The existence of .hg/dirstate.for-jenga.v6 and the presence of that filename
-             in the current file is how hg knows to create the new file rather than the
-             old one. *)
+           changing value. Same as above, we force this file to change jenga's knowledge
+           of the version is stale but if it's not, we must not self-trigger ourselves.
+           The existence of .hg/dirstate.for-jenga.v6 and the presence of that filename
+           in the current file is how hg knows to create the new file rather than the
+           old one. *)
         match Var.peek version_util_support with
         | `True log_of_pluses ->
           run_action_now
@@ -3321,8 +3336,8 @@ module Hg_version = struct
 end
 
 (*----------------------------------------------------------------------
- build_info
-----------------------------------------------------------------------*)
+  build_info
+  ----------------------------------------------------------------------*)
 
 let build_info_is_required libs =
   List.exists libs ~f:(fun libdep ->
@@ -3352,10 +3367,10 @@ let link_deps_of_libs mode ~dir ~libs_maybe_forced ~force_link ~build_libs_DEFAU
     @ (if build_libs_DEFAULT then LL.dep_on_default_alias libs else [])
   in
   (match force_link with
-  | None -> unforced ~libs:libs_maybe_forced
-  | Some lib ->
-    unforced ~libs:(List.filter libs_maybe_forced ~f:(Lib_dep.(<>) (Lib_dep.In_the_tree lib)))
-    @ link_deps_of_forced_lib mode ~dir lib.name)
+   | None -> unforced ~libs:libs_maybe_forced
+   | Some lib ->
+     unforced ~libs:(List.filter libs_maybe_forced ~f:(Lib_dep.(<>) (Lib_dep.In_the_tree lib)))
+     @ link_deps_of_forced_lib mode ~dir lib.name)
 ;;
 
 let link_deps_of_version_util (module Mode : Ocaml_mode.S) ~dir ~suppress_version_util ~libs exe =
@@ -3425,7 +3440,7 @@ let build_info_rules ~dir ~exe ~suf ~sexp_dep =
 
 (*----------------------------------------------------------------------
   Rules that check if libraries define tests or benchs
-----------------------------------------------------------------------*)
+  ----------------------------------------------------------------------*)
 let fgrep_rule ~dir ~filename ~macros ~impls =
   assert (not (List.is_empty macros));
   let target = relative ~dir filename in
@@ -3456,8 +3471,8 @@ let fgrep_bench_filename = "fgrep_bench.out"
 let bench_macros = [letp ^ "bench"; letp ^ "bench_fun"; letp ^ "bench_module"]
 
 (*----------------------------------------------------------------------
- check_ldd_deps
-----------------------------------------------------------------------*)
+  check_ldd_deps
+  ----------------------------------------------------------------------*)
 
 module Check_ldd_dependencies : sig
 
@@ -3548,8 +3563,8 @@ let check_javascript_dependencies ~dir ~required_by libs =
   ]
 
 (*----------------------------------------------------------------------
- link_native
-----------------------------------------------------------------------*)
+  link_native
+  ----------------------------------------------------------------------*)
 
 let ocaml_plugin_handling dc ~dir name =
   let ocaml_plugin_o = BN.to_string name ^ ".ocaml_plugin.o" in
@@ -3639,7 +3654,7 @@ let staged_link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
     in
     let deps =
       link_deps_of_libs (module Mode) ~dir ~libs_maybe_forced ~force_link
-         ~build_libs_DEFAULT
+        ~build_libs_DEFAULT
       @ link_deps_of_version_util (module Mode) ~dir ~suppress_version_util
           ~libs:libs_maybe_forced exe
       @ link_deps_of_objs (module Mode) objs
@@ -3686,28 +3701,28 @@ let staged_link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
     Action.process ~dir
       ocamlopt_path
       (List.concat [
-        dc.ocamlflags; ocamloptflags;
-        dc.link_flags;
-        (* The assumption is that code in the tree depends on external packages but not
-           the opposite, so external packages must come first *)
-        external_include_flags;
-        external_archives;
-        link_flags;
-        (* Using g++ instead of gcc to link in the c++ stdlib if needed. *)
-        use_compiler_flavor `Cxx;
-        (* We would use --as-needed in bytecode as well, but it doesn't work because
-           the configure script doesn't properly detect which libraries define what
-           symbols (http://caml.inria.fr/mantis/view.php?id=7164) *)
-        (match Mode.which with
-         | `Native -> ["-ccopt"; "-Wl,--as-needed"]
-         | `Byte -> ["-custom"]);
-        build_info_args;
-        version_util_args;
-        ocaml_plugin_flags;
-        lib_cmxas;
-        sub_cmxs_in_correct_order;
-        ["-o"; dash_o];
-      ])
+         dc.ocamlflags; ocamloptflags;
+         dc.link_flags;
+         (* The assumption is that code in the tree depends on external packages but not
+            the opposite, so external packages must come first *)
+         external_include_flags;
+         external_archives;
+         link_flags;
+         (* Using g++ instead of gcc to link in the c++ stdlib if needed. *)
+         use_compiler_flavor `Cxx;
+         (* We would use --as-needed in bytecode as well, but it doesn't work because
+            the configure script doesn't properly detect which libraries define what
+            symbols (http://caml.inria.fr/mantis/view.php?id=7164) *)
+         (match Mode.which with
+          | `Native -> ["-ccopt"; "-Wl,--as-needed"]
+          | `Byte -> ["-custom"]);
+         build_info_args;
+         version_util_args;
+         ocaml_plugin_flags;
+         lib_cmxas;
+         sub_cmxs_in_correct_order;
+         ["-o"; dash_o];
+       ])
   in
 
   let js_of_ocaml_rules =
@@ -3734,22 +3749,22 @@ let staged_link (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir
       let check_dependencies = check_javascript_dependencies ~dir ~required_by:exe libs_maybe_forced_dep in
       let rules =
         Js_of_ocaml.rules_for_executable
-        ~artifacts:dc.DC.artifacts
-        ~sourcemap:javascript_sourcemap
-        ~dir
-        ~js_files: javascript_files
-        ~ocaml_where:ocaml_where_path
-        ~libs_dep:libs_maybe_forced_dep
-        ~compute_objs
-        ~toplevel
-        ~hg_version
-        ~build_info
-        ~separate_compilation:javascript_separate_compilation
-        ~devel:for_javascript_development
-        ~exe
-        ~drop_test_and_bench:(not test_or_bench)
-        ~path_to_ocaml_artifact:LL.path_to_ocaml_artifact
-        ~flags
+          ~artifacts:dc.DC.artifacts
+          ~sourcemap:javascript_sourcemap
+          ~dir
+          ~js_files: javascript_files
+          ~ocaml_where:ocaml_where_path
+          ~libs_dep:libs_maybe_forced_dep
+          ~compute_objs
+          ~toplevel
+          ~hg_version
+          ~build_info
+          ~separate_compilation:javascript_separate_compilation
+          ~devel:for_javascript_development
+          ~exe
+          ~drop_test_and_bench:(not test_or_bench)
+          ~path_to_ocaml_artifact:LL.path_to_ocaml_artifact
+          ~flags
       in
       check_dependencies :: rules
     | (`Byte | `Native), _ -> []
@@ -3820,8 +3835,8 @@ let link (module Mode : Ocaml_mode.S) dc ~dir
 ;;
 
 (*----------------------------------------------------------------------
- executable_rules
-----------------------------------------------------------------------*)
+  executable_rules
+  ----------------------------------------------------------------------*)
 
 module Executables_conf_interpret = struct
 
@@ -3845,9 +3860,9 @@ module Executables_conf_interpret = struct
     let ocamlcflags = ocamlcflags t in
     let ocamloptflags = ocamloptflags t in
     {dc with DC.
-      ocamlflags;
-      ocamlcflags;
-      ocamloptflags;
+          ocamlflags;
+          ocamlcflags;
+          ocamloptflags;
     }
 
   let libraries (t : t) = t.libraries
@@ -3888,22 +3903,22 @@ let link_executable (module Mode : Ocaml_mode.S) (dc : DC.t) ~dir ~wrapped ~libn
   let link_rules =
     let auxillary_rules, link_action =
       staged_link (module Mode) (dc : DC.t) ~dir
-          ~more_deps:[]
-          ~link_flags
-          ~build_libs_DEFAULT:true
-          ~ocaml_plugin_handling:(ocaml_plugin_handling dc ~dir name)
-          ~suppress_build_info:false
-          ~suppress_version_util:false
-          ~link_libdeps_of:(return [dir, libname])
-          ~compute_objs:
-            (objdeps ~dir name
-             *>>| fun bns ->
-             List.map (bns @ [name]) ~f:(fun name ->
-               dir, PN.of_barename ~wrapped ~libname name))
-          ~exe
-          ~force_link:None
-          ~test_or_bench:false
-          ~js_of_ocaml
+        ~more_deps:[]
+        ~link_flags
+        ~build_libs_DEFAULT:true
+        ~ocaml_plugin_handling:(ocaml_plugin_handling dc ~dir name)
+        ~suppress_build_info:false
+        ~suppress_version_util:false
+        ~link_libdeps_of:(return [dir, libname])
+        ~compute_objs:
+          (objdeps ~dir name
+           *>>| fun bns ->
+           List.map (bns @ [name]) ~f:(fun name ->
+             dir, PN.of_barename ~wrapped ~libname name))
+        ~exe
+        ~force_link:None
+        ~test_or_bench:false
+        ~js_of_ocaml
     in
     let normal_link_target = suffixed ~dir exe Mode.exe in
     let normal_link_rule =
@@ -4110,8 +4125,8 @@ let executables_rules (dc : DC.t) ~dir e_conf =
 
 
 (*----------------------------------------------------------------------
- top levels - utop and toplevel_expect_test
-----------------------------------------------------------------------*)
+  top levels - utop and toplevel_expect_test
+  ----------------------------------------------------------------------*)
 
 (* Toplevel dependencies *)
 module Toplevel = struct
@@ -4129,7 +4144,7 @@ end
 module Toplevel_expect_tests_interpret = struct
   let ppx_jane = Libdep_name.of_string "ppx_jane"
 
-    (* Expect-tests toplevels are different from normal, because preprocessors are linked
+  (* Expect-tests toplevels are different from normal, because preprocessors are linked
      straight into them (rather than being an other executable called by them). *)
   let libraries (conf : Toplevel_expect_tests.t) =
     if conf.no_ppx_jane || List.mem conf.libraries ppx_jane ~equal:Libdep_name.(=) then
@@ -4167,17 +4182,17 @@ let toplevel_info_rules libmap ~dir ~libname_for_libdeps ~target ~extra_lib ~saf
       in
       let sexp =
         [%sexp
-           { deps : LN.t list = libs
-           ; dir  : Path.t
-           ; safe_string : bool
-           }
+          { deps : LN.t list = libs
+          ; dir  : Path.t
+          ; safe_string : bool
+          }
         ]
       in
       bashf ~dir !"echo -n %{quote} | %{quote} generated_toplevel_info > %{quote}"
         (Sexp.to_string_mach sexp)
         (reach_from ~dir generate_static_string_c_code_sh)
         (basename c)
-      )
+    )
   in
   [c_rule; o_rule]
 ;;
@@ -4297,8 +4312,8 @@ let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t
     ]
 
 (*----------------------------------------------------------------------
- embedding for ocaml plugin
-----------------------------------------------------------------------*)
+  embedding for ocaml plugin
+  ----------------------------------------------------------------------*)
 
 let stdlib_cmis =
   Dep.memoize ~name:"stdlib-cmis" (
@@ -4381,34 +4396,34 @@ let embed_rules dc ~dir conf =
         Action.process ~dir
           (reach_from ~dir time_limit)
           (List.concat
-           [ [ "300"
-             ; reach_from ~dir embed_and_compile
-             ; plugin_name
-             ; C.Flavor.prog `C
-             ]
-           ; Compiler_config.arch_cflags
-           ; [ "-I"
-             ; ocaml_where
-             ; "--"
-             ; reach_from ~dir embedder
-             ]
-           ; preprocessing_spec
-           ; [ "-cc"
-             ; ocamlopt_path
-             ; "-ocamldep"
-             ; ocamldep_path
-             ]
-           ; stdlib_cmis
-           ; List.map ~f:(reach_from ~dir) cmis
-           ])
+             [ [ "300"
+               ; reach_from ~dir embed_and_compile
+               ; plugin_name
+               ; C.Flavor.prog `C
+               ]
+             ; Compiler_config.arch_cflags
+             ; [ "-I"
+               ; ocaml_where
+               ; "--"
+               ; reach_from ~dir embedder
+               ]
+             ; preprocessing_spec
+             ; [ "-cc"
+               ; ocamlopt_path
+               ; "-ocamldep"
+               ; ocamldep_path
+               ]
+             ; stdlib_cmis
+             ; List.map ~f:(reach_from ~dir) cmis
+             ])
       )
     in
     [gen_plugin_c];
   )
 
 (*----------------------------------------------------------------------
- jane-script specific
-----------------------------------------------------------------------*)
+  jane-script specific
+  ----------------------------------------------------------------------*)
 
 let jane_script_rules dc
       { Jane_script_conf. libraries = public_libraries; pps } =
@@ -4480,11 +4495,11 @@ let jane_script_rules dc
         Dep.path ppx_path;
       ]
   ; cfg_rule
-  ;
+    ;
   ]
 
 (*----------------------------------------------------------------------
- inline_tests & benchmarks
+  inline_tests & benchmarks
   ----------------------------------------------------------------------*)
 
 let inline_tests_args ~runtime_environment ~libname ~flags : string list =
@@ -4525,36 +4540,36 @@ let inline_tests_script_rule =
          sprintf !"export %{quote}=%{quote}\n" k v))
   in
   fun ~uses_catalog ~dir ~libname ~runtime_environment ~script:target ~flags ->
-  let run =
-    if drop_test
-    then "echo >&2 'Tests have been disabled'; exit 1"
-    else
-      let command =
-        match runtime_environment with
-        | `Javascript ->
-          Config.nodejs_prog ^ " ./inline_tests_runner" ^ Js_of_ocaml.exe_suf
-        | `Emacs ->
-          Config.emacs_prog ^ " -Q -L . -batch -l inline_tests_runner -- "
-        | `Exe ->
-          (* If an inline test configuration claims that catalog will not be used, we want
-             the same behavior whether jenga runs the tests or people run the test, which
-             is why we pass ~can_assume_env_is_setup. *)
-          let r =
-            Catalog_sandbox.wrap uses_catalog
-              ~can_assume_env_is_setup:false
-              { prog = "./inline_tests_runner.exe"; args = []; dir }
-          in
-          assert (Path.(=) r.dir dir);
-          concat_quoted (r.prog :: r.args)
-      in
-      sprintf !{|exec %s %{concat_quoted} "$@"|}
-        command (inline_tests_args ~runtime_environment ~libname ~flags)
-  in
-  Rule.write_string ~chmod_x:() ~target:(relative ~dir target) (
-{|#!/bin/sh
-# This file was generated by jenga
-cd "$(dirname "$(readlink -f "$0")")"
-|} ^ define_inline_tests_env ^ run)
+    let run =
+      if drop_test
+      then "echo >&2 'Tests have been disabled'; exit 1"
+      else
+        let command =
+          match runtime_environment with
+          | `Javascript ->
+            Config.nodejs_prog ^ " ./inline_tests_runner" ^ Js_of_ocaml.exe_suf
+          | `Emacs ->
+            Config.emacs_prog ^ " -Q -L . -batch -l inline_tests_runner -- "
+          | `Exe ->
+            (* If an inline test configuration claims that catalog will not be used, we want
+               the same behavior whether jenga runs the tests or people run the test, which
+               is why we pass ~can_assume_env_is_setup. *)
+            let r =
+              Catalog_sandbox.wrap uses_catalog
+                ~can_assume_env_is_setup:false
+                { prog = "./inline_tests_runner.exe"; args = []; dir }
+            in
+            assert (Path.(=) r.dir dir);
+            concat_quoted (r.prog :: r.args)
+        in
+        sprintf !{|exec %s %{concat_quoted} "$@"|}
+          command (inline_tests_args ~runtime_environment ~libname ~flags)
+    in
+    Rule.write_string ~chmod_x:() ~target:(relative ~dir target) (
+      {|#!/bin/sh
+        # This file was generated by jenga
+        cd "$(dirname "$(readlink -f "$0")")"
+      |} ^ define_inline_tests_env ^ run)
 ;;
 
 let inline_tests_html_rule ~dir ~libname ~html ~flags =
@@ -4581,13 +4596,13 @@ let inline_bench_script_rule ~dir ~libname =
         (LN.to_string libname)
         (Path.reach_from ~dir
            (root_relative
-             "lib/core_bench/inline_benchmarks_runner_lib_internal/etc/config.sexp"))
+              "lib/core_bench/inline_benchmarks_runner_lib_internal/etc/config.sexp"))
   in
   Rule.write_string ~chmod_x:() ~target:(relative ~dir "inline_benchmarks_runner") (
-{|#!/bin/sh
-# This file was generated by jenga
-cd "$(dirname "$(readlink -f "$0")")"
-|} ^ run)
+    {|#!/bin/sh
+      # This file was generated by jenga
+      cd "$(dirname "$(readlink -f "$0")")"
+    |} ^ run)
 ;;
 
 let run_inline_action ~dir ~uses_catalog ~user_deps ~exe_deps ~flags ~runtime_deps
@@ -4763,46 +4778,46 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
            ~uses_catalog:user_config.uses_catalog
        ])
     ; (
-       let inline_test_exe_paths =
-         Dep.memoize ~name:"inline-test-exe-paths" (
-           sources_with_tests ~dir *>>| function
-           | None -> None
-           | Some { inline_test = (); expect_tests = _ } ->
-             if (should.build_native || should.build_javascript)
-             && not (Compiler_selection.m32 && only_shared_object) (* emacs is 64 bits *)
-             then
-               let names = List.concat [
-                 if should.build_native
-                 then [exe; exe ^ exe_suf]
-                 else [];
-                 if should.build_javascript
-                 then [exe_js; exe ^ ".bc.js"]
-                 else [];
-               ]
-               in
-               Some (List.map names ~f:(fun name -> Dep.path (relative ~dir name)))
-             else None
-         )
-       in
-       Rule.alias (Alias.runtime_deps_of_tests ~dir) [
-           inline_test_exe_paths *>>= function
-           | None -> return ()
-           | Some names ->
-             Dep.all_unit (names
-                           @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
-                           @ Catalog_sandbox.deps user_config.uses_catalog)
-         ]
-       :: match alias_for_inline_runners ~dir ~skip_from_default with
-          | None -> []
-          | Some alias ->
-            if not link_executables_on_disk
-            then []
-            else [ Rule.alias alias [
-                    inline_test_exe_paths *>>= function
-                    | None -> return ()
-                    | Some names -> Dep.all_unit names
-                  ] ]
-      )
+      let inline_test_exe_paths =
+        Dep.memoize ~name:"inline-test-exe-paths" (
+          sources_with_tests ~dir *>>| function
+          | None -> None
+          | Some { inline_test = (); expect_tests = _ } ->
+            if (should.build_native || should.build_javascript)
+            && not (Compiler_selection.m32 && only_shared_object) (* emacs is 64 bits *)
+            then
+              let names = List.concat [
+                if should.build_native
+                then [exe; exe ^ exe_suf]
+                else [];
+                if should.build_javascript
+                then [exe_js; exe ^ ".bc.js"]
+                else [];
+              ]
+              in
+              Some (List.map names ~f:(fun name -> Dep.path (relative ~dir name)))
+            else None
+        )
+      in
+      Rule.alias (Alias.runtime_deps_of_tests ~dir) [
+        inline_test_exe_paths *>>= function
+        | None -> return ()
+        | Some names ->
+          Dep.all_unit (names
+                        @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
+                        @ Catalog_sandbox.deps user_config.uses_catalog)
+      ]
+      :: match alias_for_inline_runners ~dir ~skip_from_default with
+      | None -> []
+      | Some alias ->
+        if not link_executables_on_disk
+        then []
+        else [ Rule.alias alias [
+          inline_test_exe_paths *>>= function
+          | None -> return ()
+          | Some names -> Dep.all_unit names
+        ] ]
+    )
     ; ( let alias =
           match user_config.alias with
           | None -> Alias.runtest ~dir
@@ -4867,8 +4882,8 @@ let inline_bench_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree =
   ]
 
 (*----------------------------------------------------------------------
- generate_dep_rules
-----------------------------------------------------------------------*)
+  generate_dep_rules
+  ----------------------------------------------------------------------*)
 
 let ocaml_libraries : [< Jbuild.t ] -> _ = function
   | `ocamllex _ -> []
@@ -4977,8 +4992,8 @@ let generate_dep_rules (dc : DC.t) ~dir jbuilds =
   )
 
 (*----------------------------------------------------------------------
- merlin rules
-----------------------------------------------------------------------*)
+  merlin rules
+  ----------------------------------------------------------------------*)
 
 let merlin_1step_libs dc ~dir =
   Dep.List.concat_map dc.DC.xlibnames ~f:(fun libname ->
@@ -5082,7 +5097,7 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
               in
               if wrapped
               then List.map (xlibnames jbuild) ~f:(fun libname ->
-                     "FLG -open " ^ internal_intf_of_lib_module ~libname)
+                "FLG -open " ^ internal_intf_of_lib_module ~libname)
               else []
             )
           ) @
@@ -5130,8 +5145,8 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
   ]
 
 (*----------------------------------------------------------------------
- library_rules
-----------------------------------------------------------------------*)
+  library_rules
+  ----------------------------------------------------------------------*)
 
 module Library_conf_interpret = struct
 
@@ -5157,9 +5172,9 @@ module Library_conf_interpret = struct
     let ocamlcflags = ocamlcflags t in
     let ocamloptflags = ocamloptflags t in
     {dc with DC.
-      ocamlflags;
-      ocamlcflags;
-      ocamloptflags
+          ocamlflags;
+          ocamlcflags;
+          ocamloptflags
     }
 end
 
@@ -5386,7 +5401,7 @@ let library_rules dc ~dir library_conf =
     doc_alias;
   ]
 
-let enforce_style ~dir ({ exceptions } : Enforce_style_conf.t) =
+let enforce_style ~dir { Enforce_style_conf.enabled; exceptions } =
   let in_bin_dir file = relative ~dir:Config.script_dir file in
   let bin_apply_style     = in_bin_dir "apply-style"     in
   let bin_enforce_style   = in_bin_dir "enforce-style"   in
@@ -5394,20 +5409,28 @@ let enforce_style ~dir ({ exceptions } : Enforce_style_conf.t) =
   let bin_indent_elisp_el = in_bin_dir "indent-elisp.el" in
   let bin_ocp_indent      = in_bin_dir "ocp-indent"      in
   let files_to_style = relative ~dir ".files-to-style" in
-  let enforce_style_alias = Alias.create ~dir "enforce-style" in
+  let enforce_style_alias = Alias.enforce_style ~dir in
   [ Rule.create ~targets:[ files_to_style ]
       (Dep.glob_listing (Glob.create "*.{el,ml{,i,t}}" ~dir)
        *>>| fun all_styled_files ->
        let to_style =
-         all_styled_files
-         |> List.map ~f:Path.basename
-         |> String.Set.of_list in
-       let invalid_exceptions = Set.diff exceptions to_style in
-       if not (Set.is_empty invalid_exceptions)
-       then Located_error.raisef ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
-              "[enforce_style] has [exceptions] for non existent files: %s"
-              (invalid_exceptions |> Set.to_list |> String.concat ~sep:" ") ();
-       let to_style = Set.to_list (Set.diff to_style exceptions) in
+         if not enabled
+         then []
+         else (
+           let to_style =
+             all_styled_files
+             |> List.map ~f:Path.basename
+             |> String.Set.of_list
+           in
+           let invalid_exceptions = Set.diff exceptions to_style in
+           if not (Set.is_empty invalid_exceptions)
+           then Located_error.raisef
+                  ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
+                  "[enforce_style] has [exceptions] for non existent files: %s"
+                  (invalid_exceptions |> Set.to_list |> String.concat ~sep:" ")
+                  ();
+           Set.to_list (Set.diff to_style exceptions))
+       in
        Action.save ~target:files_to_style (String.concat ~sep:"\n" to_style ^ "\n"))
   ; Rule.alias (Alias.lib_artifacts ~dir) [ Dep.alias enforce_style_alias ]
   ; Rule.alias (Alias.runtest       ~dir) [ Dep.alias enforce_style_alias ]
@@ -5430,8 +5453,8 @@ let enforce_style ~dir ({ exceptions } : Enforce_style_conf.t) =
 ;;
 
 (*----------------------------------------------------------------------
-public_repo_rules
-----------------------------------------------------------------------*)
+  public_repo_rules
+  ----------------------------------------------------------------------*)
 
 module Public_release = Public_release.Make(struct
     module User_or_gen_config = User_or_gen_config
@@ -5913,6 +5936,7 @@ let recursive_alias_list = [
   Alias.create "empty";
   Alias.create "feature-subtree-build";
   Alias.default;
+  Alias.enforce_style;
   Alias.libdeps;
   Alias.merlin;
   Alias.pp;
