@@ -626,7 +626,22 @@ module Executables_conf = struct
     review_help : bool [@default false];
     only_shared_object : bool [@default false];
     skip_from_default : bool [@default false];
+    (* [sqml_backend] is used to switch between the deprecated blocking backend and
+       the new non-blocking one. *)
+    sqml_backend : [`New|`Deprecated|`Default] [@default `Default];
   } [@@deriving of_sexp]
+
+
+  let t_of_sexp sexp =
+    let t = t_of_sexp sexp in
+    match t.sqml_backend with
+    | `Default -> t
+    | `New ->
+      let backend = Libdep_name.of_string "for_jenga_root_only_select_new_sqml_backend" in
+      { t with libraries = backend :: t.libraries }
+    | `Deprecated ->
+      let backend = Libdep_name.of_string "for_jenga_root_only_select_deprecated_sqml_backend" in
+      { t with libraries = backend :: t.libraries }
 end
 
 module Jane_script_conf = struct

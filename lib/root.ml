@@ -212,9 +212,6 @@ let dynlinkable_code =
 let bin_annot =
   Var.peek_register_bool "BIN_ANNOT" ~default:true
 
-let use_new_sqml =
-  Var.peek_register_bool "USE_NEW_SQML" ~default:false
-
 let build_info_app_fields =
   Option.map (Var.peek (Var.register "BUILD_INFO_APP_FIELDS")) ~f:(fun s ->
     Sexp.of_string_conv_exn ~source:(Other "variable BUILD_INFO_APP_FIELDS")
@@ -428,7 +425,6 @@ let root_var_table = [
   "ocaml_version"  , Compiler_selection.major_version;
   "ocaml_where"    , ocaml_where;
   "ARCH_SIXTYFOUR" , Bool.to_string (not Compiler_selection.m32);
-  "USE_NEW_SQML"   , Bool.to_string use_new_sqml;
   "ALLOW_HARDWARE_SPECIALIZATION", Bool.to_string allow_hardware_specialization;
   "PORTABLE_INT63" , Bool.to_string portable_int63;
   "NODE"           , Config.nodejs_prog;
@@ -3407,7 +3403,6 @@ let build_info_rules ~dir ~exe ~suf ~sexp_dep =
       let build_info () =
         let application_specific_fields =
           Option.value build_info_app_fields ~default:String.Map.empty
-          |> Map.add ~key:"use_new_sql" ~data:(Bool.sexp_of_t use_new_sqml)
         in
         [%sexp
           { x_library_inlining = (x_library_inlining : bool);
