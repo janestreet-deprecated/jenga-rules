@@ -4557,7 +4557,7 @@ let inline_tests_script_rule =
             assert (Path.(=) r.dir dir);
             concat_quoted (r.prog :: r.args)
         in
-        sprintf !{|exec %s %{concat_quoted} "$@"|}
+        sprintf !{|exec %s %{concat_quoted} "$@" < /dev/null|}
           command (inline_tests_args ~runtime_environment ~libname ~flags)
     in
     Rule.write_string ~chmod_x:() ~target:(relative ~dir target) (
@@ -4587,7 +4587,7 @@ let inline_bench_script_rule ~dir ~libname =
         !"BENCHMARKS_RUNNER=TRUE \
           BENCH_LIB=%{quote} \
           BENCH_CONFIG_PATH=%{quote} \
-          exec ./inline_benchmarks_runner.exe \"$@\""
+          exec ./inline_benchmarks_runner.exe \"$@\" < /dev/null"
         (LN.to_string libname)
         (Path.reach_from ~dir
            (root_relative
@@ -4777,7 +4777,7 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
         Dep.memoize ~name:"inline-test-exe-paths" (
           sources_with_tests ~dir *>>| function
           | None -> None
-          | Some { inline_test = (); expect_tests = _ } ->
+          | Some { inline_test = (); expect_tests } ->
             if (should.build_native || should.build_javascript)
             && not (Compiler_selection.m32 && only_shared_object) (* emacs is 64 bits *)
             then
@@ -4790,17 +4790,23 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
                 else [];
               ]
               in
-              Some (List.map names ~f:(fun name -> Dep.path (relative ~dir name)))
+              Some (
+                `executables (
+                  List.map names ~f:(fun name -> Dep.path (relative ~dir name))),
+                `sources
+                  (List.map expect_tests ~f:(fun name -> Dep.path (relative ~dir name))))
             else None
         )
       in
       Rule.alias (Alias.runtime_deps_of_tests ~dir) [
         inline_test_exe_paths *>>= function
         | None -> return ()
-        | Some names ->
-          Dep.all_unit (names
-                        @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
-                        @ Catalog_sandbox.deps user_config.uses_catalog)
+        | Some (`executables names1, `sources names2) ->
+          Dep.all_unit (
+            names1
+            @ names2
+            @ Dep_conf_interpret.list_to_depends ~dir user_config.deps
+            @ Catalog_sandbox.deps user_config.uses_catalog)
       ]
       :: match alias_for_inline_runners ~dir ~skip_from_default with
       | None -> []
@@ -4810,7 +4816,8 @@ let inline_tests_rules (dc : DC.t) ~skip_from_default ~lib_in_the_tree
         else [ Rule.alias alias [
           inline_test_exe_paths *>>= function
           | None -> return ()
-          | Some names -> Dep.all_unit names
+          | Some (`executables names, `sources _names) ->
+            Dep.all_unit names
         ] ]
     )
     ; ( let alias =
@@ -5396,7 +5403,8 @@ let library_rules dc ~dir library_conf =
     doc_alias;
   ]
 
-let enforce_style ~dir { Enforce_style_conf.enabled; exceptions } =
+let enforce_style ~dir config =
+  let { Enforce_style_conf.enabled; exceptions; let_syntax; ocamlformat } = config in
   let in_bin_dir file = relative ~dir:Config.script_dir file in
   let bin_apply_style     = in_bin_dir "apply-style"     in
   let bin_enforce_style   = in_bin_dir "enforce-style"   in
@@ -5404,8 +5412,18 @@ let enforce_style ~dir { Enforce_style_conf.enabled; exceptions } =
   let bin_indent_elisp_el = in_bin_dir "indent-elisp.el" in
   let bin_ocp_indent      = in_bin_dir "ocp-indent"      in
   let files_to_style = relative ~dir ".files-to-style" in
+  let files_to_style_config = relative ~dir Enforce_style_conf.filename in
   let enforce_style_alias = Alias.enforce_style ~dir in
-  [ Rule.create ~targets:[ files_to_style ]
+  (if enabled && (Option.is_some let_syntax || Option.is_some ocamlformat)
+   then
+     [ Rule.alias enforce_style_alias [ Dep.path files_to_style_config ]
+     ; Rule.create ~targets:[ files_to_style_config ]
+         (Dep.return
+            (Action.save ~target:files_to_style_config
+               (Sexp.to_string (Enforce_style_conf.sexp_of_t config) ^ "\n")))
+     ]
+   else [])
+  @ [ Rule.create ~targets:[ files_to_style ]
       (Dep.glob_listing (Glob.create "*.{el,ml{,i,t}}" ~dir)
        *>>| fun all_styled_files ->
        let to_style =
@@ -5417,11 +5435,21 @@ let enforce_style ~dir { Enforce_style_conf.enabled; exceptions } =
              |> List.map ~f:Path.basename
              |> String.Set.of_list
            in
-           let invalid_exceptions = Set.diff exceptions to_style in
+           let invalid_exceptions =
+             let all_exceptions =
+               String.Set.union_list
+                 (List.filter_opt
+                    [ Some exceptions
+                    ; Option.map let_syntax ~f:(fun t -> t.exceptions)
+                    ; Option.map ocamlformat ~f:(fun t -> t.exceptions)
+                    ])
+             in
+             Set.diff all_exceptions to_style
+           in
            if not (Set.is_empty invalid_exceptions)
            then Located_error.raisef
                   ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
-                  "[enforce_style] has [exceptions] for non existent files: %s"
+                  "enforce_style has exceptions for non existent files: %s"
                   (invalid_exceptions |> Set.to_list |> String.concat ~sep:" ")
                   ();
            Set.to_list (Set.diff to_style exceptions))
@@ -5441,10 +5469,33 @@ let enforce_style ~dir { Enforce_style_conf.enabled; exceptions } =
                 ; Dep.path bin_indent_elisp
                 ; Dep.path bin_indent_elisp_el
                 ; Dep.path bin_ocp_indent
-                ; Dep.path (relative ~dir file_to_style)]
+                ; Dep.path (relative ~dir file_to_style)
+                ]
               *>>| fun () ->
-              Action.process ~dir
-                (Path.reach_from ~dir bin_enforce_style) [ file_to_style ])))]]
+              let args =
+                let let_syntax =
+                  if
+                    match let_syntax with
+                    | None -> false
+                    | Some { exceptions } -> not (Set.mem exceptions file_to_style)
+                  then [ "-let-syntax" ]
+                  else []
+                in
+                let ocamlformat =
+                  if
+                    match ocamlformat with
+                    | None -> false
+                    | Some { exceptions } -> not (Set.mem exceptions file_to_style)
+                  then [ "-ocamlformat" ]
+                  else []
+                in
+                List.concat
+                  [ [ file_to_style; "-ignore-directory-config" ]
+                  ; let_syntax
+                  ; ocamlformat
+                  ]
+              in
+              Action.process ~dir (Path.reach_from ~dir bin_enforce_style) args)))]]
 ;;
 
 (*----------------------------------------------------------------------

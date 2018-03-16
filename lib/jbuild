@@ -2,7 +2,7 @@
  ((name jenga_rules)
   (public_name jenga-rules)
   (libraries (jenga re.pcre parsexp))
-  (preprocess (pps (ppx_jane ppx_driver.runner)))
+  (preprocess (pps (ppx_jane ppxlib.runner)))
 ))
 
 

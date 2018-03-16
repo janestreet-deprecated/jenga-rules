@@ -744,28 +744,6 @@ module Provides_conf = struct
       of_sexp_error "[<name>] or [<name> (file <file>)] expected" sexp
 end
 
-module Enforce_style_conf = struct
-  type t =
-    { enabled       : bool         [@default true]             [@sexp_drop_default]
-    ; exceptions    : String.Set.t [@default String.Set.empty] [@sexp_drop_if Set.is_empty]
-    }
-  [@@deriving sexp]
-
-  let default = { enabled = true; exceptions = String.Set.empty }
-
-  let t_of_sexp sexp =
-    match (sexp : Sexp.t) with
-    | List [] ->
-      of_sexp_error
-        "[enforce_style] is now enabled by default, so you should delete \
-         [(enforce_style ())].  If you want to be explicit about opting into \
-         [enforce_style], you can say [(enforce_style ((enabled true)))]."
-        sexp;
-| _ -> t_of_sexp sexp
-;;
-
-end
-
 module Wikipub_conf = struct
   (* These stanzas should be used in directories containing wikipub documents. They define
      what documents wikipub should upload to the wiki. *)
