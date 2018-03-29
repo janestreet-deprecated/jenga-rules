@@ -159,11 +159,7 @@ let mld_file_rule ~dir ~lib:(lib : Lib_in_the_tree.t) inputs_as_module_map =
             (String.concat ~sep:" " (Map.keys inputs_as_module_map)),
           Map.data inputs_as_module_map
     in
-    let mld_file_content =
-      sprintf "{%%html:<nav><a href=\"..\">Up</a></nav>%%}\n\
-               {1 Library %s}\n%s"
-        sln mld_file_content
-    in
+    let mld_file_content = sprintf "{1 Library %s}\n%s" sln mld_file_content in
     let rule =
       Rule.simple ~targets:[target] ~deps:[]
         ~action:(Action.save mld_file_content ~target)
@@ -176,10 +172,6 @@ let mld_file_rule ~dir ~lib:(lib : Lib_in_the_tree.t) inputs_as_module_map =
       Rule.create ~targets:[target] (
         Dep.contents source_mld_file
         *>>| fun mld_file_content ->
-        let mld_file_content =
-          sprintf "{%%html:<nav><a href=\"..\">Up</a></nav>%%}\n%s\n"
-            mld_file_content
-        in
         Action.save mld_file_content ~target
       )
     in

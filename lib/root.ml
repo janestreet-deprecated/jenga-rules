@@ -4947,6 +4947,32 @@ let extra_disabled_warnings : Jbuild.t -> _ = function
   | `wikipub _ -> []
 ;;
 
+
+let jbuild_contains_unsafe_string =
+  let flags_contains_unsafe_string x =
+    List.mem ~equal:String.equal
+      (Ordered_set_lang.eval_opt_with_standard x ~standard:[])
+      "-unsafe-string"
+  in
+  function
+  | `ocamllex _ -> false
+  | `ocamlyacc _ -> false
+  | `library x -> flags_contains_unsafe_string x.Library_conf.flags
+  | `executables x -> flags_contains_unsafe_string x.Executables_conf_interpret.flags
+  | `embed _ -> false
+  | `jane_script _ -> false
+  | `compile_c _ -> false
+  | `rule _ -> false
+  | `alias _ -> false
+  | `no_utop -> false
+  | `unified_tests _ -> false
+  | `toplevel_expect_tests _ -> false
+  | `public_repo _ -> false
+  | `provides _ -> false
+  | `enforce_style _ -> false
+  | `wikipub _ -> false
+;;
+
 let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
   let of_specs (xs : Preprocess_spec.t list) =
     List.concat_map xs ~f:(fun (kind,__names_spec) ->
@@ -5084,6 +5110,9 @@ let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
         String.concat ~sep:"\n" (
           ("STDLIB " ^ ocaml_where)
           :: ("FLG " ^ (String.concat ~sep:" " dc.DC.merlinflags))
+          :: (if List.exists ~f:jbuild_contains_unsafe_string jbuilds
+              then "FLG -unsafe-string"
+              else "FLG -safe-string")
           :: "FLG -attributes-allowed" :: preprocessor_directives @ (
             (* When we use -open on the command line, we need to give it to merlin as
                well, otherwise it won't be able to type. In theory this should also be
@@ -5416,6 +5445,8 @@ let enforce_style ~dir config =
   let enforce_style_alias = Alias.enforce_style ~dir in
   (if enabled && (Option.is_some let_syntax || Option.is_some ocamlformat)
    then
+     (* invariant: create [.files-to-style.config] if and only if [apply-style] will do
+        more than indentation. Our emacs config relies on this. *)
      [ Rule.alias enforce_style_alias [ Dep.path files_to_style_config ]
      ; Rule.create ~targets:[ files_to_style_config ]
          (Dep.return
@@ -5478,19 +5509,19 @@ let enforce_style ~dir config =
                     match let_syntax with
                     | None -> false
                     | Some { exceptions } -> not (Set.mem exceptions file_to_style)
-                  then [ "-let-syntax" ]
-                  else []
+                  then Some "-let-syntax"
+                  else None
                 in
                 let ocamlformat =
                   if
                     match ocamlformat with
                     | None -> false
                     | Some { exceptions } -> not (Set.mem exceptions file_to_style)
-                  then [ "-ocamlformat" ]
-                  else []
+                  then Some "-ocamlformat"
+                  else None
                 in
-                List.concat
-                  [ [ file_to_style; "-ignore-directory-config" ]
+                List.filter_opt
+                  [ Some file_to_style
                   ; let_syntax
                   ; ocamlformat
                   ]

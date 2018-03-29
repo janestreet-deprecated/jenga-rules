@@ -17,15 +17,18 @@ let ocaml_style = Var.peek_register_bool ocaml_style_varname
                                 ~default:false)
 let ascii_diffs_varname = "UNIFIED_TESTS_ASCII_DIFFS"
 let ascii_diffs = Var.peek_register_bool ascii_diffs_varname ~default:false
+let canary = "UNIFIED_TESTS_ARE_RUNNING"
 
 let create_script ~setup_script ~prog ~args = sprintf !"
 export %s=%{Bool}
 export %s=%{Bool}
+export %s=true\
 
 %s
 %{concat_quoted} \"$@\""
               ocaml_style_varname ocaml_style
               ascii_diffs_varname ascii_diffs
+              canary
               (match setup_script with
                | None -> "# no specified file to source"
                | Some setup_script -> sprintf !"source %{quote}" setup_script)
