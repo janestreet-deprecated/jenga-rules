@@ -368,9 +368,9 @@ end = struct
 
   let rule ~dir ~libname t =
     let t =
-      { impls = List.sort ~cmp:BN.compare t.impls
-      ; intfs = List.sort ~cmp:BN.compare t.intfs
-      ; impls_and_intfs = List.sort ~cmp:BN.compare t.impls_and_intfs
+      { impls = List.sort ~compare:BN.compare t.impls
+      ; intfs = List.sort ~compare:BN.compare t.intfs
+      ; impls_and_intfs = List.sort ~compare:BN.compare t.impls_and_intfs
       ; bin_annot = t.bin_annot;
       }
     in

@@ -3,13 +3,15 @@ open Import
 open Jbuild_types
 open Ocaml_types
 
+module Ocaml_version = Public_release_types.Ocaml_version
+
 let build_servers =
   let var = "PUBLIC_RELEASE_BUILD_SERVERS" in
   Var.peek
     (Var.map (Var.register var) ~f:(fun x ->
        let s = Option.value x ~default:Config.public_release_build_servers_default in
        Sexp.of_string_conv_exn ~source:(Other ("variable " ^ var))
-         s [%of_sexp: (string * Host_and_port.t) list]))
+         s [%of_sexp: (Ocaml_version.t * Host_and_port.t) list]))
 
 let opam_switches = List.map build_servers ~f:fst
 
@@ -343,14 +345,15 @@ end = struct
                 ]
             ; Rule.alias (Alias.create ~dir "binaries")
                 (List.map opam_switches ~f:(fun sw ->
-                   Dep.alias (Alias.create ~dir ("binaries." ^ sw))))
+                   Dep.alias (Alias.create ~dir ("binaries." ^ (sw :> string)))))
             ; Rule.alias (Alias.create ~dir "binaries-no-osx")
                 (List.filter opam_switches
-                   ~f:(fun sw -> not (String.is_prefix sw ~prefix:"osx"))
+                   ~f:(fun sw -> not (String.is_prefix (sw :> string) ~prefix:"osx"))
                  |> List.map ~f:(fun sw ->
-                   Dep.alias (Alias.create ~dir ("binaries." ^ sw))))
+                   Dep.alias (Alias.create ~dir ("binaries." ^ (sw :> string)))))
             ]
           ; List.map opam_switches ~f:(fun sw ->
+              let sw : string = (sw :> string) in
               Rule.alias (Alias.create ~dir ("binaries." ^ sw))
                 [ bins
                 ; all_repos *>>= fun paths ->
@@ -421,6 +424,7 @@ end = struct
           ; file_list_filename    = Path.to_absolute_string (files_to_copy_path ~dir)
           ; package_deps_filename = Path.to_absolute_string (package_deps ~dir)
           ; hooks                 = { pre_dist; pre_opam }
+          ; min_ocaml_version     = conf.min_ocaml_version
           }
         in
         Action.save ~target:file (pkg |> T.Package.sexp_of_t |> Sexp.to_string)
@@ -460,7 +464,8 @@ end = struct
   let create_tarball = relative ~dir:bin "create_tarball.exe"
   let forbidden_regexps = root_relative "public-release/forbidden-regexps"
 
-  let bin_tarball_filename ~switch = sprintf "bin.%s.lzo" switch
+  let bin_tarball_filename ~switch =
+    sprintf "bin.%s.lzo" (switch : Ocaml_version.t :> string)
 
   let bin_checksum_filename ~switch = bin_tarball_filename ~switch ^ ".md5sum"
   let bin_checksum_path ~dir ~switch = relative ~dir (bin_checksum_filename ~switch)
@@ -503,14 +508,20 @@ end = struct
                Dep.path (bin_checksum_path ~dir:(repo_path pkg) ~switch))
            ])
       *>>| fun () ->
-      let host_and_port = List.Assoc.find_exn build_servers ~equal:String.equal switch in
-      Action.process ~dir:Path.the_root (Path.to_string build_repo)
-        [ "build"
-        ; "-host"; Host_and_port.host host_and_port
-        ; "-port"; Host_and_port.port host_and_port |> Int.to_string
-        ; repo_path pkg.name |> Path.to_string
-        ; "-checksum-file"; checksum_path |> Path.to_string
-        ]
+      if Ocaml_version.(>) pkg.min_ocaml_version switch then
+        Action.write_string "not available" ~target:checksum_path
+      else
+        let host_and_port =
+          List.Assoc.find_exn build_servers switch
+            ~equal:[%compare.equal: Ocaml_version.t]
+        in
+        Action.process ~dir:Path.the_root (Path.to_string build_repo)
+          [ "build"
+          ; "-host"; Host_and_port.host host_and_port
+          ; "-port"; Host_and_port.port host_and_port |> Int.to_string
+          ; repo_path pkg.name |> Path.to_string
+          ; "-checksum-file"; checksum_path |> Path.to_string
+          ]
     )
 
   let rules ~artifacts ~dir (conf : Public_repo.t) =
@@ -545,10 +556,10 @@ end = struct
           :: deps_conf_to_deps ~dir conf.deps)
         *>>| fun () ->
         bashf ~dir ~sandbox:Sandbox.hardlink
-          !"%{quote} %{quote} -ocaml-bin %{quote} -relative-root %s"
+          !"env PATH=%{quote}:\"$PATH\" %{quote} %{quote} -relative-root %s"
+          Compiler_selection.compiler_bin_dir
           (Path.reach_from ~dir create_tarball)
           (Path.reach_from ~dir (Metadata.path ~package:pkg_name))
-          Compiler_selection.compiler_bin_dir
           (Path.reach_from ~dir Path.the_root)
       )
     in

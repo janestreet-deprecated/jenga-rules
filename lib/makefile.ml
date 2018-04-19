@@ -121,7 +121,7 @@ start:\n\tcd \"$$(pwd -P)\" && $(MAKE) all # cd to physical path
   ;;
 
   let format_makefile ~putenv ~roots trips =
-    let trips = List.sort trips ~cmp:compare_trip_for_sort in
+    let trips = List.sort trips ~compare:compare_trip_for_sort in
     sprintf "%s\n%s\n%s\nall : %s\n\n%s\n"
       banner
       (format_putenv putenv)

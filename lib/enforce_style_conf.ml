@@ -1,8 +1,6 @@
 open! Core
 open! Import
 
-let filename = ".files-to-style.config"
-
 module Let_syntax = struct
   type t =
     { exceptions : String.Set.t [@default String.Set.empty] [@sexp_drop_if Set.is_empty]

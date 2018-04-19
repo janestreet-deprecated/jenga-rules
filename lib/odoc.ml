@@ -36,13 +36,13 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
       List.fold impls ~init:String.Map.empty ~f:(fun map bn ->
         let pn = PN.of_barename ~wrapped:true ~libname bn in
         let cmt = PN.suffixed ~dir:remote_dir pn ".cmt" in
-        Map.add map ~key:(PN.to_module pn) ~data:(pn, cmt)
+        Map.set map ~key:(PN.to_module pn) ~data:(pn, cmt)
       )
     in
     List.fold lib_modules.intfs ~init:impls ~f:(fun map bn ->
       let pn = PN.of_barename ~wrapped:true ~libname bn in
       let cmti = PN.suffixed ~dir:remote_dir pn ".cmti" in
-      Map.add map ~key:(PN.to_module pn) ~data:(pn, cmti)
+      Map.set map ~key:(PN.to_module pn) ~data:(pn, cmti)
     )
   in
   let search_path_deps =
@@ -72,7 +72,7 @@ let odoc_compile_rules ~dir ~search_paths ~libname ~remote_dir =
                 if current_module = this_module then
                   None
                 else
-                  let _digest = Digest.from_hex digest_hex in
+                  let _digest = Md5.of_hex_exn digest_hex in
                   match Map.find pn_to_path this_module with
                   | None -> None
                   | Some (pn, _) -> Some (Dep.path @@ PN.suffixed ~dir pn ".odoc")

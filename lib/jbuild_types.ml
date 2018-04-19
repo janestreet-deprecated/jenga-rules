@@ -718,6 +718,7 @@ module Public_repo = struct
     ; deps                : Dep_conf.t sexp_list
     ; hooks               : String_with_vars.t T.Package.Hooks.t
                               [@default T.Package.Hooks.none]
+    ; min_ocaml_version   : T.Ocaml_version.t [@default T.Ocaml_version.default]
     }
   [@@deriving of_sexp]
 end
@@ -769,6 +770,23 @@ module Wikipub_conf = struct
     ] [@@deriving of_sexp]
 end
 
+module Mlis_are_mandatory = struct
+  type t =
+    { enabled : bool [@default true] [@sexp_drop_default]
+    ; exceptions : String.Set.t [@default String.Set.empty] [@sexp_drop_if Set.is_empty]
+    }
+  [@@deriving sexp]
+
+  let standard_exceptions =
+    [ "import"
+    ; "import_stable"
+    ; "stable"
+    ; "std"
+    ]
+    |> String.Set.of_list
+  ;;
+end
+
 module Jbuild = struct
   (* [Jbuild.t] describes the various kinds of build configuration descriptions.
      A jbuild file contains the sexp-representation of a list of [Jbuild.t]
@@ -798,6 +816,7 @@ module Jbuild = struct
   | `toplevel_expect_tests of Toplevel_expect_tests.t
   | `public_repo of Public_repo.t
   | `provides of Provides_conf.t sexp_list
+  | `mlis_are_mandatory of Mlis_are_mandatory.t
 
   (* [enforce_style] opts in the [jbuild]'s directory to the requirement that (some of)
      the directory's files are correctly styled according to [bin/apply-style].

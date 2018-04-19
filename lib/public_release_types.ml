@@ -64,6 +64,20 @@ module Lib_info = struct
     | External    x   -> Some x.public_name
 end
 
+module Ocaml_version : sig
+  type t = private string [@@deriving compare, sexp]
+
+  val (>) : t -> t -> bool
+
+  val default : t
+end = struct
+  type t = string [@@deriving compare, sexp]
+
+  let (>) x y = Int.(>) (compare x y) 0
+
+  let default = "4.06.1"
+end
+
 module Package = struct
   module Hooks = struct
     type 'a t =
@@ -92,6 +106,7 @@ module Package = struct
     (** Public version, of the form NNN.NN.NN. It is [None] for dev branches. *)
     ; stable_version        : string option
     ; hooks                 : string Hooks.t [@default Hooks.none]
+    ; min_ocaml_version     : Ocaml_version.t [@default Ocaml_version.default]
     }
   [@@deriving compare, sexp]
 end

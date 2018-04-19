@@ -1,8 +1,6 @@
 open! Core
 open! Import
 
-val filename : string
-
 module Let_syntax : sig
   type t =
     { exceptions : String.Set.t

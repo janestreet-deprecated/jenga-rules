@@ -800,6 +800,7 @@ end = struct
     | `toplevel_expect_tests _ -> []
     | `public_repo _ -> []
     | `provides _ -> []
+    | `mlis_are_mandatory _ -> []
     | `enforce_style _ -> []
     | `wikipub _ -> []
 
@@ -818,6 +819,7 @@ end = struct
     | `toplevel_expect_tests _ -> []
     | `public_repo _ -> []
     | `provides l -> l
+    | `mlis_are_mandatory _ -> []
     | `enforce_style _ -> []
     | `wikipub _ -> []
 
@@ -1710,11 +1712,11 @@ end = struct
     U.fold t ~init:String.Map.empty ~f:(fun acc var ->
       let module N = Named_artifact in
       match N.find artifacts (Artifact_name.of_string var) with
-      | Some data -> Map.add acc ~key:var ~data
+      | Some data -> Map.set acc ~key:var ~data
       | None ->
         match String.lsplit2 var ~on:':' with
-        | Some ("bin"     , s) -> Map.add acc ~key:var ~data:(N.binary           s)
-        | Some ("findlib" , s) -> Map.add acc ~key:var ~data:(N.in_findlib       s)
+        | Some ("bin"     , s) -> Map.set acc ~key:var ~data:(N.binary           s)
+        | Some ("findlib" , s) -> Map.set acc ~key:var ~data:(N.in_findlib       s)
         | _ -> acc)
 
   let expand t ~artifact_map ~dir ~targets ~deps =
@@ -2265,7 +2267,7 @@ let generate_ppx_exe_rules libmap ~dir ~artifacts ~link_flags =
     let lib_deps =
       Dep.memoize ~name:"ppx-lib-deps" (
         libs_transitive_closure libmap
-          (Libmap.resolve_string_exn libmap "ppx_driver" :: PPXset.to_libs ppxset libmap))
+          (Libmap.resolve_string_exn libmap "ppxlib" :: PPXset.to_libs ppxset libmap))
     in
     let predicates = ["custom_ppx"; "ppx_driver"] in
     let fl_archives = Findlib.archives mode ~dir ~exe lib_deps ~predicates in
@@ -2509,7 +2511,7 @@ let gen_dependencies kind ~mc ~name ~actual_modules =
   let potential_dependencies =
     output
     |> parse_ocamldep_output_exn ~filename:(basename source)
-    |> List.sort ~cmp:String.compare
+    |> List.sort ~compare:String.compare
     (* can depend on both a.ml and A.ml, depending on which one exists *)
     |> List.concat_map ~f:(fun x ->
       (* Consider both [x] and an uncapitalised version.
@@ -2934,7 +2936,7 @@ let setup_ml_compile_rules
       *>>| fun all_uses ->
       let all_uses = LN.Map.of_alist_multi all_uses in
       let libraries_written_by_user =
-        List.sort ~cmp:LN.compare libraries_written_by_user
+        List.sort ~compare:LN.compare libraries_written_by_user
       in
       let bad, good =
         List.partition_map libraries_written_by_user ~f:(fun lib ->
@@ -3079,7 +3081,7 @@ module Ordering = struct
     let ordered_list = List.map ordered_list ~f:PN.to_string in
     let _, map =
       List.fold ~init:(0, String.Map.empty) ordered_list ~f:(fun (count, map) elt ->
-        (count + 1, Map.add map ~key:elt ~data:count)
+        (count + 1, Map.add_exn map ~key:elt ~data:count)
       ) in
     fun elt1 elt2 ->
       match Map.find map elt1 with
@@ -3093,7 +3095,7 @@ module Ordering = struct
 
   let sort ~wrapped ~dir ~libname unsorted_cmxs =
     comparison ~wrapped ~dir ~libname *>>| fun comparison ->
-    List.sort unsorted_cmxs ~cmp:(fun cmx1 cmx2 ->
+    List.sort unsorted_cmxs ~compare:(fun cmx1 cmx2 ->
       let mod1 = Filename.chop_extension cmx1 in
       let mod2 = Filename.chop_extension cmx2 in
       comparison mod1 mod2)
@@ -4256,14 +4258,16 @@ let utop_rules (dc : DC.t) ~lib_in_the_tree =
       ]
     ]
 
+let toplevel_expect_test_libname_for_libdeps = LN.of_string "ocaml-expect"
+
 let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t) =
-  let libname_for_libdeps = LN.of_string "ocaml-expect" in
   let extra_lib = None in
   let exe = relative ~dir "ocaml-expect" in
   let runtest =
     Dep.both
       (Dep.glob_listing (Glob.create ~dir "*.mlt"))
-      (toplevel_runtime_libs dc.libmap ~dir ~libname_for_libdeps ~extra_lib)
+      (toplevel_runtime_libs dc.libmap ~dir
+         ~libname_for_libdeps:toplevel_expect_test_libname_for_libdeps ~extra_lib)
     *>>= fun (mlt_files, libs) ->
     Dep.all_unit
       (List.map mlt_files ~f:(fun mlt_file ->
@@ -4291,13 +4295,13 @@ let toplevel_expect_tests_rules (dc : DC.t) ~dir (conf : Toplevel_expect_tests.t
         ~more_deps:[]
         ~target:"ocaml-expect"
         ~main:toplevel_expect_tests_main
-        ~libname_for_libdeps
+        ~libname_for_libdeps:toplevel_expect_test_libname_for_libdeps
         ~extra_lib
         ~safe_string:conf.safe_string
     ; gen_libdeps dc.libmap ~dir ~pps:[] ~ppx_runtime_libraries:[]
         ~libs:(Toplevel_expect_tests_interpret.libraries conf
                |> Libmap.resolve_libdep_names_exn dc.libmap)
-        libname_for_libdeps
+        toplevel_expect_test_libname_for_libdeps
     ; [ Rule.alias (Alias.runtest ~dir) [runtest]
       ; Rule.alias (Alias.runtime_deps_of_tests ~dir) [ Dep.path exe ]
       ]
@@ -4902,6 +4906,7 @@ let ocaml_libraries : [< Jbuild.t ] -> _ = function
   | `toplevel_expect_tests x -> Toplevel_expect_tests_interpret.libraries x
   | `public_repo _ -> []
   | `provides _ -> []
+  | `mlis_are_mandatory _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
 ;;
@@ -4924,6 +4929,7 @@ let xlibnames : Jbuild.t -> _ = function
   | `toplevel_expect_tests _ -> []
   | `public_repo _ -> []
   | `provides _ -> []
+  | `mlis_are_mandatory _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
 ;;
@@ -4943,6 +4949,7 @@ let extra_disabled_warnings : Jbuild.t -> _ = function
   | `toplevel_expect_tests _ -> []
   | `public_repo _ -> []
   | `provides _ -> []
+  | `mlis_are_mandatory _ -> []
   | `enforce_style _ -> []
   | `wikipub _ -> []
 ;;
@@ -4969,6 +4976,7 @@ let jbuild_contains_unsafe_string =
   | `toplevel_expect_tests _ -> false
   | `public_repo _ -> false
   | `provides _ -> false
+  | `mlis_are_mandatory _ -> false
   | `enforce_style _ -> false
   | `wikipub _ -> false
 ;;
@@ -4995,6 +5003,7 @@ let pps_of_jbuild (jbuild_item : [< Jbuild.t ]) =
   | `toplevel_expect_tests _
   | `public_repo _
   | `provides _
+  | `mlis_are_mandatory _
   | `enforce_style _
   | `wikipub _
     -> []
@@ -5023,10 +5032,23 @@ let generate_dep_rules (dc : DC.t) ~dir jbuilds =
   merlin rules
   ----------------------------------------------------------------------*)
 
-let merlin_1step_libs dc ~dir =
-  Dep.List.concat_map dc.DC.xlibnames ~f:(fun libname ->
+let merlin_libdeps dc ~dir ~contains_mlt =
+  let xlibnames =
+    if contains_mlt then
+      toplevel_expect_test_libname_for_libdeps :: dc.DC.xlibnames
+    else
+      dc.DC.xlibnames
+  in
+  Dep.List.concat_map xlibnames ~f:(fun libname ->
     Libmap.load_lib_deps dc.libmap (LN.suffixed ~dir libname ".libdeps")
-  ) *>>| Lib_dep.remove_dups_preserve_order
+  ) *>>| fun lst ->
+  (* make sure that we don't introduce a dependency loop in cases where the
+     toplevel_expect_test stanza introduces a dependency on a library defined in the same
+     jbuild/directory. *)
+  List.filter (Lib_dep.remove_dups_preserve_order lst) ~f:(function
+    | In_the_tree l -> Path.(<>) l.Lib_in_the_tree.source_path dir
+    | _ -> true
+  )
 ;;
 
 let command_for_merlin args =
@@ -5068,6 +5090,8 @@ let merlin_ppx_directives ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
         (match jbuild_item with
          | `library l -> preprocess_spec l.preprocess
          | `executables e -> preprocess_spec e.preprocess
+         | `toplevel_expect_tests t ->
+           if t.no_ppx_jane then `No_preprocessing else `Pps ([PP.jane], [])
          | _ -> `No_code))
   in
   match approx with
@@ -5101,10 +5125,15 @@ let merlin_ppx_directives ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
 
 let merlin_rules dc ~dir (jbuilds : Jbuild_types.Jbuild.t list) =
   let target = relative ~dir ".merlin" in
+  let contains_mlt =
+    List.exists jbuilds ~f:(function `toplevel_expect_tests _ -> true | _ -> false)
+  in
   (* don't create .merlin files in all the directories when we don't need them *)
-  if List.is_empty dc.DC.xlibnames && Path.(<>) dir Path.the_root then [] else [
+  if List.is_empty dc.DC.xlibnames && not contains_mlt && Path.(<>) dir Path.the_root then
+    []
+  else [
     Rule.create ~targets:[target] (
-      merlin_1step_libs dc ~dir *>>= fun libs ->
+      merlin_libdeps dc ~contains_mlt ~dir *>>= fun libs ->
       merlin_ppx_directives ~dir jbuilds *>>= fun preprocessor_directives ->
       let dot_merlin_contents =
         String.concat ~sep:"\n" (
@@ -5432,6 +5461,51 @@ let library_rules dc ~dir library_conf =
     doc_alias;
   ]
 
+let mlis_are_mandatory (dc : DC.t) (config : Jbuild_types.Mlis_are_mandatory.t) =
+  if not config.enabled
+  then Scheme.empty
+  else
+    let dir = dc.dir in
+    let check =
+      return () (* delay the exceptions *)
+      *>>| fun () ->
+      let is_standard_exception name =
+        List.exists dc.xlibnames ~f:(fun lib -> String.equal name (Libname.to_string lib))
+        || String.is_suffix name ~suffix:"_intf"
+        || Set.mem Jbuild_types.Mlis_are_mandatory.standard_exceptions name
+      in
+      let () =
+        let impl_doesnt_exist name = not (dc.impl_is_buildable (BN.of_string name)) in
+        let nonexistent_exceptions = Set.filter config.exceptions ~f:impl_doesnt_exist in
+        if not (Set.is_empty nonexistent_exceptions)
+        then
+          Located_error.raisef
+            ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
+            "nonexistent modules listed as mlis_are_mandatory exceptions: %s"
+            (Set.to_list nonexistent_exceptions |> String.concat ~sep:", ") ();
+        let redundant_exceptions = Set.filter config.exceptions ~f:is_standard_exception in
+        if not (Set.is_empty redundant_exceptions)
+        then
+          Located_error.raisef
+            ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
+            "modules redundantly listed as mlis_are_mandatory exceptions: %s"
+            (Set.to_list redundant_exceptions |> String.concat ~sep:", ") ();
+      in
+      List.iter dc.impls ~f:(fun name ->
+        let basename = BN.to_string name in
+        if not (is_standard_exception basename) then begin
+          let is_exception = Set.mem config.exceptions basename in
+          let should_be_exception = not (dc.intf_is_buildable name) in
+          if Bool.(<>) is_exception should_be_exception then
+            Located_error.raisef ~loc:(dummy_position (BN.suffixed ~dir name ".ml"))
+              (if should_be_exception
+               then "this .ml doesn't have a corresponding .mli"
+               else "this .ml has a corresponding .mli but the jbuild says it does not") ()
+        end)
+    in
+    Scheme.rules [ Rule.alias (Alias.lib_artifacts ~dir) [ check ] ]
+;;
+
 let enforce_style ~dir config =
   let { Enforce_style_conf.enabled; exceptions; let_syntax; ocamlformat } = config in
   let in_bin_dir file = relative ~dir:Config.script_dir file in
@@ -5441,20 +5515,8 @@ let enforce_style ~dir config =
   let bin_indent_elisp_el = in_bin_dir "indent-elisp.el" in
   let bin_ocp_indent      = in_bin_dir "ocp-indent"      in
   let files_to_style = relative ~dir ".files-to-style" in
-  let files_to_style_config = relative ~dir Enforce_style_conf.filename in
   let enforce_style_alias = Alias.enforce_style ~dir in
-  (if enabled && (Option.is_some let_syntax || Option.is_some ocamlformat)
-   then
-     (* invariant: create [.files-to-style.config] if and only if [apply-style] will do
-        more than indentation. Our emacs config relies on this. *)
-     [ Rule.alias enforce_style_alias [ Dep.path files_to_style_config ]
-     ; Rule.create ~targets:[ files_to_style_config ]
-         (Dep.return
-            (Action.save ~target:files_to_style_config
-               (Sexp.to_string (Enforce_style_conf.sexp_of_t config) ^ "\n")))
-     ]
-   else [])
-  @ [ Rule.create ~targets:[ files_to_style ]
+  [ Rule.create ~targets:[ files_to_style ]
       (Dep.glob_listing (Glob.create "*.{el,ml{,i,t}}" ~dir)
        *>>| fun all_styled_files ->
        let to_style =
@@ -5590,6 +5652,15 @@ end = struct
 end
 
 let jbuild_rules_with_directory_context dc ~dir jbuilds =
+  let names = String.Hash_set.create () ~size:1 in
+  let reject_duplicated_section ~name =
+    if Hash_set.mem names name
+    then
+      Located_error.raisef
+        ~loc:(dummy_position (User_or_gen_config.source_file ~dir))
+        "expected at most one %s jbuild stanza" name ()
+    else Hash_set.add names name
+  in
   Scheme.all (
     List.map jbuilds ~f:(fun (j : Jbuild_types.Jbuild.t) ->
       match j with
@@ -5616,7 +5687,12 @@ let jbuild_rules_with_directory_context dc ~dir jbuilds =
       | `toplevel_expect_tests conf ->
         Scheme.rules (toplevel_expect_tests_rules dc ~dir conf)
       | `public_repo conf -> Scheme.rules (Public_release.rules ~artifacts:dc.artifacts ~dir conf)
-      | `enforce_style conf -> Scheme.rules (enforce_style ~dir conf)
+      | `mlis_are_mandatory conf ->
+        reject_duplicated_section ~name:"mlis_are_mandatory";
+        mlis_are_mandatory dc conf
+      | `enforce_style conf ->
+        reject_duplicated_section ~name:"enforce_style";
+        Scheme.rules (enforce_style ~dir conf)
       | `wikipub wikipub -> Wikipub.scheme ~dir wikipub
     )
   )
@@ -5667,6 +5743,7 @@ let rules_without_directory_context ~dir jbuilds artifacts =
        | `toplevel_expect_tests _
        | `public_repo _
        | `provides _
+       | `mlis_are_mandatory _
        | `enforce_style _
        | `wikipub _
          -> []))
